@@ -8,7 +8,7 @@
     <!-- 1. Tailwind CSS (Styling) -->
     <script src="https://cdn.tailwindcss.com"></script>
     
-    <!-- 2. Import Map (Agar bisa import module langsung di browser tanpa build tools) -->
+    <!-- 2. Import Map -->
     <script type="importmap">
     {
       "imports": {
@@ -22,7 +22,7 @@
     }
     </script>
 
-    <!-- 3. Babel (Untuk memproses kode React/JSX di browser) -->
+    <!-- 3. Babel -->
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
     <style>
@@ -139,10 +139,7 @@ service cloud.firestore {
                 setStatusLog("Menghubungkan ke database...");
                 const tablesRef = collection(db, COLLECTION_NAME);
                 
-                // onSnapshot sudah efisien, hanya membaca 1x saat load dan saat ada perubahan
                 const unsubscribe = onSnapshot(tablesRef, (snapshot) => {
-                // setStatusLog(`Data diterima. Jumlah meja: ${snapshot.docs.length}`);
-                
                 const fetchedTables = snapshot.docs.map(doc => {
                     const data = doc.data();
                     return {
@@ -178,8 +175,9 @@ service cloud.firestore {
                 return () => unsubscribe();
             }, [user]);
 
+            // PERBAIKAN: Update waktu setiap 5 DETIK (bukan 60 detik) agar durasi terlihat jalan
             useEffect(() => {
-                const timer = setInterval(() => setCurrentTime(new Date()), 60000);
+                const timer = setInterval(() => setCurrentTime(new Date()), 5000);
                 return () => clearInterval(timer);
             }, []);
 
@@ -254,7 +252,7 @@ service cloud.firestore {
                 setIsSettingUp(false);
             };
 
-            // --- FITUR SINKRONISASI POS (OPTIMIZED) ---
+            // --- FITUR SINKRONISASI POS (OPTIMIZED & FIX TIME) ---
             const syncFromPOS = async () => {
                 if (!user) return;
                 setIsSyncing(true);
@@ -263,16 +261,12 @@ service cloud.firestore {
                 try {
                     const ordersRef = collection(db, 'orders');
                     
-                    // OPTIMASI: Batasi pembacaan hanya 50 dokumen agar hemat biaya
-                    // Kita tidak pakai 'orderBy' createdAt karena takut belum ada index di DB Anda
-                    // limit(50) cukup aman untuk menangkap order yang aktif
                     const q = query(ordersRef, limit(50)); 
                     const querySnapshot = await getDocs(q);
                     
                     const activeOrders = [];
                     querySnapshot.forEach((doc) => {
                         const data = doc.data();
-                        // Filter manual di client side
                         if (data.status !== 'completed' && data.status !== 'voided' && data.table) {
                             activeOrders.push({
                                 tableNumber: data.table, 
@@ -297,17 +291,26 @@ service cloud.firestore {
                         const existingTable = tables.find(t => t.id === tableId);
 
                         if (existingTable) {
-                            // Cek dulu apakah statusnya beda, kalau sama gak usah update (Hemat Write)
-                            if (existingTable.status !== 'occupied' || existingTable.customer !== order.customer) {
+                            // Cek jika status sebelumnya kosong, maka SET WAKTU MULAI SEKARANG
+                            // Ini penting agar menitnya mulai jalan dari 0
+                            if (existingTable.status !== 'occupied') {
                                 batch.update(tableRef, {
                                     status: 'occupied',
+                                    customer: order.customer,
+                                    total: order.total,
+                                    startTime: new Date() // Reset waktu mulai
+                                });
+                                updateCount++;
+                            } else if (existingTable.customer !== order.customer) {
+                                // Jika pelanggan beda (ganti tamu tapi belum checkout), update nama saja
+                                batch.update(tableRef, {
                                     customer: order.customer,
                                     total: order.total
                                 });
                                 updateCount++;
                             }
                         } else {
-                            // Meja baru (misal Meja 27) -> WAJIB CREATE
+                            // Meja baru -> WAJIB CREATE dengan startTime sekarang
                             newTablesCount++;
                             const tNum = parseInt(order.tableNumber);
                             let type = 'Indoor';
@@ -348,11 +351,9 @@ service cloud.firestore {
 
             const updateTableStatus = async (id, data) => {
                 if (!user) return;
-                // setStatusLog(`Mengupdate meja ${id}...`);
                 try {
                 const tableRef = doc(db, COLLECTION_NAME, id);
                 await updateDoc(tableRef, data);
-                // setStatusLog("Update sukses.");
                 } catch (err) {
                 console.error(err);
                 if (err.code === 'permission-denied') {
@@ -421,14 +422,18 @@ service cloud.firestore {
             const totalTables = tables.length;
             const occupiedTables = tables.filter(t => t.status === 'occupied').length;
             
-            // Occupancy rate calculation (safe divide)
             const occupancyRate = totalTables > 0 ? Math.round((occupiedTables / totalTables) * 100) : 0;
             
+            // Perbaikan tampilan durasi: jika < 1 menit, tampilkan "<1m" atau "0m"
             const getDuration = (startTime) => {
                 if (!startTime) return '0m';
-                const diff = Math.floor((currentTime - startTime) / 60000);
-                const hours = Math.floor(diff / 60);
-                const mins = diff % 60;
+                const diffMs = currentTime - startTime;
+                if (diffMs < 0) return '0m'; // Handle case jam device beda
+
+                const diffMins = Math.floor(diffMs / 60000);
+                const hours = Math.floor(diffMins / 60);
+                const mins = diffMins % 60;
+                
                 return hours > 0 ? `${hours}j ${mins}m` : `${mins}m`;
             };
 
