@@ -132,12 +132,19 @@ service cloud.firestore {
                     const batch = writeBatch(db);
                     for (let i = 1; i <= 26; i++) {
                         const tId = `table-${i.toString().padStart(2, '0')}`;
-                        // Logika distribusi lokasi untuk setup awal
+                        // Logika distribusi lokasi baru
                         let type = 'Indoor';
-                        if (i > 10) type = 'Lantai 2';
-                        if (i > 15) type = 'Outdoor';
-                        if (i > 20) type = 'Outdoor Taman';
-                        if (i > 23) type = 'VIP Utama';
+                        if (i > 5) type = 'Indoor Depan';
+                        if (i > 8) type = 'Lantai 2';
+                        if (i > 12) type = 'Room Meeting 1';
+                        if (i > 13) type = 'Room Meeting 2';
+                        if (i > 14) type = 'Outdoor';
+                        if (i > 18) type = 'Outdoor Taman';
+                        if (i > 20) type = 'Outdoor Belakang';
+                        if (i > 22) type = 'VIP Utama';
+                        if (i > 23) type = 'Room Karaoke 1';
+                        if (i > 24) type = 'Room Karaoke 2';
+                        if (i > 25) type = 'Room Karaoke 3';
                         
                         batch.set(doc(db, COLLECTION_NAME, tId), {
                             tableNumber: i, name: `T-${i.toString().padStart(2, '0')}`, type, capacity: 4, status: 'empty', customer: '', startTime: null, total: 0, items: []
@@ -158,18 +165,14 @@ service cloud.firestore {
                         const data = d.data();
                         const name = data.customerName || data.name || data.customer || (data.queueNumber ? `Antrian #${data.queueNumber}` : 'Tamu POS');
                         
-                        // Ekstrak Menu Items (Logic Cerdas)
                         let menuItems = [];
                         if (data.items && Array.isArray(data.items)) {
-                            // Format umum: items: [{name: "Kopi", qty: 1}, ...]
                             menuItems = data.items.map(i => `${i.qty || 1}x ${i.name || i.menuName || 'Item'}`);
                         } else if (data.cart && Array.isArray(data.cart)) {
-                            // Format cart
                             menuItems = data.cart.map(i => `${i.qty || 1}x ${i.name || i.menuName || 'Item'}`);
                         } else if (data.orderItems && Array.isArray(data.orderItems)) {
                             menuItems = data.orderItems.map(i => `${i.qty || 1}x ${i.name || 'Item'}`);
                         } 
-                        // Fallback jika tidak ada array items (mungkin single item order?)
                         if (menuItems.length === 0 && (data.itemName || data.productName)) {
                             menuItems.push(`1x ${data.itemName || data.productName}`);
                         }
@@ -179,12 +182,7 @@ service cloud.firestore {
                             const existing = tables.find(t => t.id === tId);
                             const tNum = parseInt(data.table);
                             
-                            // Default type jika meja baru terbuat otomatis
                             const type = tNum > 15 ? 'Outdoor' : 'Indoor';
-                            
-                            // Logika Update: 
-                            // 1. Jika meja belum ada atau kosong -> Set Baru
-                            // 2. Jika meja sudah terisi -> Update Items & Total (siapa tau nambah pesanan)
                             
                             if (!existing || existing.status !== 'occupied') {
                                 batch.set(doc(db, COLLECTION_NAME, tId), {
@@ -193,11 +191,9 @@ service cloud.firestore {
                                 }, { merge: true });
                                 count++;
                             } else {
-                                // Update item & total untuk meja yang sudah ada
                                 batch.update(doc(db, COLLECTION_NAME, tId), {
                                     total: data.total || 0,
                                     items: menuItems,
-                                    // Optional: update nama customer jika berubah
                                     customer: name 
                                 });
                                 count++;
@@ -238,16 +234,22 @@ service cloud.firestore {
                 }
             };
 
-            // NEW: UPDATE WARNA POSISI AGAR LEBIH JELAS
+            // UPDATE WARNA POSISI
             const getLocationColor = (type) => {
                 switch (type) {
                     case 'Indoor': return 'bg-blue-100 text-blue-700';
+                    case 'Indoor Depan': return 'bg-sky-100 text-sky-700';
                     case 'Outdoor': return 'bg-orange-100 text-orange-700';
                     case 'Lantai 2': return 'bg-indigo-100 text-indigo-700';
                     case 'VIP Utama': return 'bg-purple-100 text-purple-700';
                     case 'VIP Payboss': return 'bg-pink-100 text-pink-700';
                     case 'Outdoor Taman': return 'bg-emerald-100 text-emerald-700';
                     case 'Outdoor Belakang': return 'bg-teal-100 text-teal-700';
+                    case 'Room Meeting 1': return 'bg-cyan-100 text-cyan-700';
+                    case 'Room Meeting 2': return 'bg-cyan-100 text-cyan-700';
+                    case 'Room Karaoke 1': return 'bg-rose-100 text-rose-700';
+                    case 'Room Karaoke 2': return 'bg-rose-100 text-rose-700';
+                    case 'Room Karaoke 3': return 'bg-rose-100 text-rose-700';
                     default: return 'bg-gray-200 text-gray-700';
                 }
             };
@@ -348,12 +350,18 @@ service cloud.firestore {
                                         {/* PILIHAN POSISI LENGKAP */}
                                         <select value={selectedTable.type} onChange={(e)=>updateTableStatus(selectedTableId, {type: e.target.value})} className="w-full p-1 text-sm border rounded cursor-pointer">
                                             <option value="Indoor">Indoor</option>
+                                            <option value="Indoor Depan">Indoor Depan</option>
                                             <option value="Outdoor">Outdoor</option>
-                                            <option value="VIP Utama">VIP Utama</option>
-                                            <option value="Lantai 2">Lantai 2</option>
-                                            <option value="VIP Payboss">VIP Payboss</option>
                                             <option value="Outdoor Taman">Outdoor Taman</option>
                                             <option value="Outdoor Belakang">Outdoor Belakang</option>
+                                            <option value="Lantai 2">Lantai 2</option>
+                                            <option value="VIP Utama">VIP Utama</option>
+                                            <option value="VIP Payboss">VIP Payboss</option>
+                                            <option value="Room Meeting 1">Room Meeting 1</option>
+                                            <option value="Room Meeting 2">Room Meeting 2</option>
+                                            <option value="Room Karaoke 1">Room Karaoke 1</option>
+                                            <option value="Room Karaoke 2">Room Karaoke 2</option>
+                                            <option value="Room Karaoke 3">Room Karaoke 3</option>
                                         </select>
                                     </div>
                                 </div>
