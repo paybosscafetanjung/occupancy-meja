@@ -31,7 +31,7 @@
         import { 
             Users, Clock, Coffee, CheckCircle, Trash2, RefreshCw, 
             MapPin, AlertCircle, Database, LogIn, LogOut, Lock, 
-            ShieldAlert, Copy, Activity, ArrowRightLeft, Edit3, Calendar, User, CalendarClock, XCircle
+            ShieldAlert, Copy, Activity, ArrowRightLeft, Edit3, Calendar, User, CalendarClock, XCircle, FileText
         } from 'lucide-react';
         
         import { initializeApp } from 'firebase/app';
@@ -157,6 +157,23 @@ service cloud.firestore {
                     snap.forEach(d => {
                         const data = d.data();
                         const name = data.customerName || data.name || data.customer || (data.queueNumber ? `Antrian #${data.queueNumber}` : 'Tamu POS');
+                        
+                        // Ekstrak Menu Items (Logic Cerdas)
+                        let menuItems = [];
+                        if (data.items && Array.isArray(data.items)) {
+                            // Format umum: items: [{name: "Kopi", qty: 1}, ...]
+                            menuItems = data.items.map(i => `${i.qty || 1}x ${i.name || i.menuName || 'Item'}`);
+                        } else if (data.cart && Array.isArray(data.cart)) {
+                            // Format cart
+                            menuItems = data.cart.map(i => `${i.qty || 1}x ${i.name || i.menuName || 'Item'}`);
+                        } else if (data.orderItems && Array.isArray(data.orderItems)) {
+                            menuItems = data.orderItems.map(i => `${i.qty || 1}x ${i.name || 'Item'}`);
+                        } 
+                        // Fallback jika tidak ada array items (mungkin single item order?)
+                        if (menuItems.length === 0 && (data.itemName || data.productName)) {
+                            menuItems.push(`1x ${data.itemName || data.productName}`);
+                        }
+
                         if (data.status !== 'completed' && data.status !== 'voided' && data.table) {
                             const tId = `table-${data.table.toString().padStart(2, '0')}`;
                             const existing = tables.find(t => t.id === tId);
@@ -165,17 +182,30 @@ service cloud.firestore {
                             // Default type jika meja baru terbuat otomatis
                             const type = tNum > 15 ? 'Outdoor' : 'Indoor';
                             
+                            // Logika Update: 
+                            // 1. Jika meja belum ada atau kosong -> Set Baru
+                            // 2. Jika meja sudah terisi -> Update Items & Total (siapa tau nambah pesanan)
+                            
                             if (!existing || existing.status !== 'occupied') {
                                 batch.set(doc(db, COLLECTION_NAME, tId), {
                                     tableNumber: tNum, name: `T-${data.table.toString().padStart(2, '0')}`, type, capacity: 4, 
-                                    status: 'occupied', customer: name, total: data.total || 0, startTime: new Date(), items: []
+                                    status: 'occupied', customer: name, total: data.total || 0, startTime: new Date(), items: menuItems
                                 }, { merge: true });
+                                count++;
+                            } else {
+                                // Update item & total untuk meja yang sudah ada
+                                batch.update(doc(db, COLLECTION_NAME, tId), {
+                                    total: data.total || 0,
+                                    items: menuItems,
+                                    // Optional: update nama customer jika berubah
+                                    customer: name 
+                                });
                                 count++;
                             }
                         }
                     });
                     if (count > 0) await batch.commit();
-                    setStatusLog(`Sync: ${count} meja.`);
+                    setStatusLog(`Sync: ${count} meja diupdate.`);
                 } catch (err) { console.error(err); alert(`Gagal: ${err.message}`); }
                 setIsSyncing(false);
             };
@@ -225,7 +255,7 @@ service cloud.firestore {
             // ACTIONS
             const handleCheckIn = (name) => {
                 if(!selectedTableId) return;
-                updateTableStatus(selectedTableId, { status: 'occupied', customer: name || 'Pelanggan', startTime: new Date(), total: 0 });
+                updateTableStatus(selectedTableId, { status: 'occupied', customer: name || 'Pelanggan', startTime: new Date(), total: 0, items: [] });
             };
             const handleReservation = () => {
                 if(!selectedTableId || !resName || !resTime) return alert("Nama dan Jam wajib diisi!");
@@ -238,8 +268,8 @@ service cloud.firestore {
             };
             const handleCancelRes = () => updateTableStatus(selectedTableId, { status: 'empty', customer: '', reservationTime: null });
             
-            const handleCheckout = () => updateTableStatus(selectedTableId, { status: 'dirty', customer: '', startTime: null, total: 0 });
-            const handleClean = () => updateTableStatus(selectedTableId, { status: 'empty' });
+            const handleCheckout = () => updateTableStatus(selectedTableId, { status: 'dirty', customer: '', startTime: null, total: 0, items: [] });
+            const handleClean = () => updateTableStatus(selectedTableId, { status: 'empty', items: [] });
             
             const handleCustomerNameUpdate = (e) => {
                 if (!selectedTableId) return;
@@ -353,7 +383,36 @@ service cloud.firestore {
                                                 <div><span className="text-[10px] text-slate-500 block">Durasi</span><b className="text-blue-600">{getDuration(selectedTable.startTime)}</b></div>
                                             </div>
                                         </div>
-                                        <div><label className="text-xs font-bold text-slate-400 uppercase">Tagihan</label><div className="font-mono text-lg">Rp {(selectedTable.total||0).toLocaleString()}</div></div>
+                                        
+                                        {/* BAGIAN MENU MAKANAN (PENGGANTI TAGIHAN BESAR) */}
+                                        <div className="flex flex-col h-full">
+                                            <div className="flex items-center gap-2 mb-2">
+                                                <FileText size={16} className="text-slate-400"/>
+                                                <label className="text-xs font-bold text-slate-500 uppercase">Daftar Menu</label>
+                                            </div>
+                                            
+                                            <div className="bg-white border border-slate-200 rounded-lg p-3 max-h-48 overflow-y-auto shadow-sm">
+                                                {selectedTable.items && selectedTable.items.length > 0 ? (
+                                                    <ul className="text-sm space-y-2">
+                                                        {selectedTable.items.map((item, idx) => (
+                                                            <li key={idx} className="border-b border-slate-100 last:border-0 pb-1 last:pb-0 text-slate-700 flex items-start">
+                                                                <span className="w-1.5 h-1.5 rounded-full bg-slate-300 mt-1.5 mr-2 shrink-0"></span>
+                                                                {item}
+                                                            </li>
+                                                        ))}
+                                                    </ul>
+                                                ) : (
+                                                    <div className="text-center py-4 text-slate-400 italic text-xs">
+                                                        Belum ada menu yang di-scan dari POS.
+                                                    </div>
+                                                )}
+                                            </div>
+                                            
+                                            <div className="mt-3 flex justify-between items-center border-t pt-3">
+                                                <span className="text-sm font-semibold text-slate-500">Total Tagihan</span>
+                                                <span className="font-mono text-lg font-bold text-slate-800">Rp {(selectedTable.total||0).toLocaleString()}</span>
+                                            </div>
+                                        </div>
                                     </div>
                                 )}
 
