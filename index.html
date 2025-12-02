@@ -21,6 +21,11 @@
     <style>
         @keyframes pulse-slow { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
         .animate-pulse-slow { animation: pulse-slow 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+        
+        /* Custom Scrollbar for Menu List */
+        .menu-list::-webkit-scrollbar { width: 4px; }
+        .menu-list::-webkit-scrollbar-track { background: #f1f1f1; }
+        .menu-list::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 2px; }
     </style>
 </head>
 <body class="bg-slate-100 text-slate-800 font-sans">
@@ -31,7 +36,7 @@
         import { 
             Users, Clock, Coffee, CheckCircle, Trash2, RefreshCw, 
             MapPin, AlertCircle, Database, LogIn, LogOut, Lock, 
-            ShieldAlert, Copy, Activity, ArrowRightLeft, Edit3, Calendar, User, CalendarClock, XCircle, FileText
+            ShieldAlert, Copy, Activity, ArrowRightLeft, Edit3, Calendar, User, CalendarClock, XCircle, FileText, Music, Crown
         } from 'lucide-react';
         
         import { initializeApp } from 'firebase/app';
@@ -103,7 +108,15 @@ service cloud.firestore {
                         id: d.id, ...d.data(), 
                         startTime: d.data().startTime?.seconds ? new Date(d.data().startTime.seconds * 1000) : null 
                     }));
-                    data.sort((a, b) => (a.tableNumber || 0) - (b.tableNumber || 0));
+                    
+                    // Custom Sort: Angka dulu, baru text (VIP/Karaoke)
+                    data.sort((a, b) => {
+                        const numA = a.tableNumber || 999;
+                        const numB = b.tableNumber || 999;
+                        if (numA !== numB) return numA - numB;
+                        return a.name.localeCompare(b.name);
+                    });
+                    
                     setTables(data); setLoading(false); setPermissionError(false);
                 }, (err) => {
                     console.error(err);
@@ -126,31 +139,54 @@ service cloud.firestore {
 
             const handleLogout = async () => { await signOut(auth); setEmail(''); setPassword(''); };
 
+            // --- REVISI SETUP DATABASE (Sesuai Menu Pelanggan) ---
             const initializeDatabase = async () => {
-                if (!user) return; setIsSettingUp(true);
+                if (!user) return; setIsSettingUp(true); setStatusLog("Membuat 33 Meja + Room...");
                 try {
                     const batch = writeBatch(db);
-                    for (let i = 1; i <= 26; i++) {
+                    
+                    // 1. SETUP MEJA REGULER (1-33)
+                    for (let i = 1; i <= 33; i++) {
                         const tId = `table-${i.toString().padStart(2, '0')}`;
-                        // Logika distribusi lokasi baru
+                        
+                        // Distribusi Lokasi (Estimasi)
                         let type = 'Indoor';
-                        if (i > 5) type = 'Indoor Depan';
-                        if (i > 8) type = 'Lantai 2';
-                        if (i > 12) type = 'Room Meeting 1';
-                        if (i > 13) type = 'Room Meeting 2';
-                        if (i > 14) type = 'Outdoor';
-                        if (i > 18) type = 'Outdoor Taman';
-                        if (i > 20) type = 'Outdoor Belakang';
-                        if (i > 22) type = 'VIP Utama';
-                        if (i > 23) type = 'Room Karaoke 1';
-                        if (i > 24) type = 'Room Karaoke 2';
-                        if (i > 25) type = 'Room Karaoke 3';
+                        if (i > 10) type = 'Indoor Depan';
+                        if (i > 15) type = 'Lantai 2';
+                        if (i > 25) type = 'Outdoor Taman';
+                        if (i > 30) type = 'Outdoor Belakang';
                         
                         batch.set(doc(db, COLLECTION_NAME, tId), {
-                            tableNumber: i, name: `T-${i.toString().padStart(2, '0')}`, type, capacity: 4, status: 'empty', customer: '', startTime: null, total: 0, items: []
+                            tableNumber: i, 
+                            name: `T-${i.toString().padStart(2, '0')}`, 
+                            type, 
+                            capacity: 4, 
+                            status: 'empty', 
+                            customer: '', startTime: null, total: 0, items: []
                         }, { merge: true });
                     }
-                    await batch.commit(); alert("Sukses Setup Meja!");
+
+                    // 2. SETUP SPECIAL ROOMS
+                    const specialRooms = [
+                        { id: 'table-vip', name: 'VIP Payboss', type: 'VIP Payboss', cap: 8 },
+                        { id: 'table-karaoke-1', name: 'Karaoke 1', type: 'Room Karaoke 1', cap: 6 },
+                        { id: 'table-karaoke-2', name: 'Karaoke 2', type: 'Room Karaoke 2', cap: 6 },
+                        { id: 'table-karaoke-3', name: 'Karaoke 3', type: 'Room Karaoke 3', cap: 6 },
+                    ];
+
+                    specialRooms.forEach(room => {
+                        batch.set(doc(db, COLLECTION_NAME, room.id), {
+                            tableNumber: 100, // Supaya diurutkan di belakang
+                            name: room.name,
+                            type: room.type,
+                            capacity: room.cap,
+                            status: 'empty',
+                            customer: '', startTime: null, total: 0, items: []
+                        }, { merge: true });
+                    });
+
+                    await batch.commit(); 
+                    alert("Sukses! 33 Meja + VIP + Karaoke berhasil dibuat.");
                 } catch (err) { err.code === 'permission-denied' ? setPermissionError(true) : alert(err.message); }
                 setIsSettingUp(false);
             };
@@ -161,33 +197,60 @@ service cloud.firestore {
                     const snap = await getDocs(query(collection(db, 'orders'), limit(50)));
                     const batch = writeBatch(db);
                     let count = 0;
+                    
                     snap.forEach(d => {
                         const data = d.data();
+                        
+                        // Nama Pelanggan
                         const name = data.customerName || data.name || data.customer || (data.queueNumber ? `Antrian #${data.queueNumber}` : 'Tamu POS');
                         
+                        // Menu Items
                         let menuItems = [];
                         if (data.items && Array.isArray(data.items)) {
                             menuItems = data.items.map(i => `${i.qty || 1}x ${i.name || i.menuName || 'Item'}`);
                         } else if (data.cart && Array.isArray(data.cart)) {
                             menuItems = data.cart.map(i => `${i.qty || 1}x ${i.name || i.menuName || 'Item'}`);
-                        } else if (data.orderItems && Array.isArray(data.orderItems)) {
-                            menuItems = data.orderItems.map(i => `${i.qty || 1}x ${i.name || 'Item'}`);
                         } 
-                        if (menuItems.length === 0 && (data.itemName || data.productName)) {
-                            menuItems.push(`1x ${data.itemName || data.productName}`);
-                        }
+                        if (menuItems.length === 0 && (data.itemName || data.productName)) menuItems.push(`1x ${data.itemName || data.productName}`);
 
+                        // --- LOGIKA PENCOCOKAN ID MEJA YANG LEBIH PINTAR ---
                         if (data.status !== 'completed' && data.status !== 'voided' && data.table) {
-                            const tId = `table-${data.table.toString().padStart(2, '0')}`;
+                            let tId = '';
+                            let tableName = data.table.toString(); // misal "1" atau "Karaoke Room 1"
+
+                            // Cek apakah angka atau teks
+                            if (!isNaN(tableName) && parseInt(tableName) > 0) {
+                                // Jika angka (1-33), format jadi table-01
+                                tId = `table-${tableName.padStart(2, '0')}`;
+                            } else {
+                                // Jika teks (Karaoke Room 1), format jadi slug
+                                if (tableName.includes('VIP')) tId = 'table-vip';
+                                else if (tableName.includes('Karaoke') && tableName.includes('1')) tId = 'table-karaoke-1';
+                                else if (tableName.includes('Karaoke') && tableName.includes('2')) tId = 'table-karaoke-2';
+                                else if (tableName.includes('Karaoke') && tableName.includes('3')) tId = 'table-karaoke-3';
+                                else tId = `table-${tableName.replace(/\s+/g, '-').toLowerCase()}`; // Fallback
+                            }
+
+                            // Cek di state lokal apakah meja ada
                             const existing = tables.find(t => t.id === tId);
-                            const tNum = parseInt(data.table);
                             
-                            const type = tNum > 15 ? 'Outdoor' : 'Indoor';
-                            
+                            // Tentukan Tipe Default jika membuat meja baru
+                            let type = 'Indoor';
+                            if (tId.includes('karaoke')) type = 'Room Karaoke';
+                            if (tId.includes('vip')) type = 'VIP Payboss';
+
                             if (!existing || existing.status !== 'occupied') {
                                 batch.set(doc(db, COLLECTION_NAME, tId), {
-                                    tableNumber: tNum, name: `T-${data.table.toString().padStart(2, '0')}`, type, capacity: 4, 
-                                    status: 'occupied', customer: name, total: data.total || 0, startTime: new Date(), items: menuItems
+                                    // Gunakan parseInt hanya jika angka, jika tidak biarkan 100 (belakang)
+                                    tableNumber: !isNaN(tableName) ? parseInt(tableName) : 100, 
+                                    name: tableName.length < 3 ? `T-${tableName.padStart(2, '0')}` : tableName, // T-01 atau "Karaoke 1"
+                                    type, 
+                                    capacity: 4, 
+                                    status: 'occupied', 
+                                    customer: name, 
+                                    total: data.total || 0, 
+                                    startTime: new Date(), 
+                                    items: menuItems
                                 }, { merge: true });
                                 count++;
                             } else {
@@ -234,24 +297,15 @@ service cloud.firestore {
                 }
             };
 
-            // UPDATE WARNA POSISI
             const getLocationColor = (type) => {
-                switch (type) {
-                    case 'Indoor': return 'bg-blue-100 text-blue-700';
-                    case 'Indoor Depan': return 'bg-sky-100 text-sky-700';
-                    case 'Outdoor': return 'bg-orange-100 text-orange-700';
-                    case 'Lantai 2': return 'bg-indigo-100 text-indigo-700';
-                    case 'VIP Utama': return 'bg-purple-100 text-purple-700';
-                    case 'VIP Payboss': return 'bg-pink-100 text-pink-700';
-                    case 'Outdoor Taman': return 'bg-emerald-100 text-emerald-700';
-                    case 'Outdoor Belakang': return 'bg-teal-100 text-teal-700';
-                    case 'Room Meeting 1': return 'bg-cyan-100 text-cyan-700';
-                    case 'Room Meeting 2': return 'bg-cyan-100 text-cyan-700';
-                    case 'Room Karaoke 1': return 'bg-rose-100 text-rose-700';
-                    case 'Room Karaoke 2': return 'bg-rose-100 text-rose-700';
-                    case 'Room Karaoke 3': return 'bg-rose-100 text-rose-700';
-                    default: return 'bg-gray-200 text-gray-700';
-                }
+                if(!type) return 'bg-gray-200 text-gray-700';
+                const t = type.toLowerCase();
+                if (t.includes('karaoke')) return 'bg-rose-100 text-rose-700';
+                if (t.includes('vip')) return 'bg-purple-100 text-purple-700';
+                if (t.includes('outdoor')) return 'bg-orange-100 text-orange-700';
+                if (t.includes('lantai 2')) return 'bg-indigo-100 text-indigo-700';
+                if (t.includes('depan')) return 'bg-sky-100 text-sky-700';
+                return 'bg-blue-100 text-blue-700';
             };
 
             // ACTIONS
@@ -305,18 +359,19 @@ service cloud.firestore {
                             <div><h1 className="text-xl font-bold flex items-center gap-2"><Database className="text-green-600"/> Payboss Floor</h1><p className="text-xs text-slate-500">{user.email}</p></div>
                             <div className="flex gap-3">
                                 <button onClick={syncFromPOS} disabled={isSyncing} className={`px-3 py-2 text-white text-xs font-bold rounded flex items-center gap-2 ${isSyncing?'bg-orange-400':'bg-orange-600'}`}>{isSyncing?<RefreshCw className="animate-spin w-3 h-3"/>:<ArrowRightLeft size={14}/>} SCAN ORDERS</button>
-                                {tables.length===0 && !loading && <button onClick={initializeDatabase} disabled={isSettingUp} className="px-4 py-2 bg-slate-900 text-white text-xs font-bold rounded">SETUP MEJA</button>}
+                                {/* Tombol Setup Meja Selalu Ada Untuk Reset/Tambah Room */}
+                                <button onClick={initializeDatabase} disabled={isSettingUp} className="px-4 py-2 bg-slate-900 text-white text-xs font-bold rounded">SETUP MEJA (RESET)</button>
                                 <button onClick={handleLogout} className="px-3 py-2 border border-red-200 text-red-600 rounded text-xs font-bold flex items-center gap-1"><LogOut size={14}/> Keluar</button>
                             </div>
                         </header>
 
                         <main className="flex-1 overflow-auto p-4 flex flex-col">
                             {loading ? <div className="flex-1 flex items-center justify-center text-slate-400"><RefreshCw className="animate-spin"/></div> :
-                            tables.length===0 ? <div className="flex-1 flex items-center justify-center text-slate-400">Database Kosong. Klik Setup Meja.</div> :
+                            tables.length===0 ? <div className="flex-1 flex items-center justify-center text-slate-400">Database Kosong. Klik Setup Meja (Reset).</div> :
                             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3 pb-8">
                                 {tables.map(t => (
                                     <button key={t.id} onClick={()=>{setSelectedTableId(t.id); setIsReserving(false);}} className={`relative p-3 rounded-lg border-2 transition-all flex flex-col items-start min-h-[110px] shadow-sm text-left ${selectedTableId===t.id?'ring-2 ring-blue-400 scale-[1.02] z-10':''} ${getStatusColor(t.status)}`}>
-                                        <div className="flex justify-between w-full mb-1"><span className="font-bold text-lg">{t.name}</span><span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${getLocationColor(t.type)}`}>{t.type}</span></div>
+                                        <div className="flex justify-between w-full mb-1"><span className="font-bold text-lg truncate pr-1">{t.name}</span><span className={`text-[9px] font-bold px-1.5 py-0.5 rounded truncate max-w-[80px] ${getLocationColor(t.type)}`}>{t.type}</span></div>
                                         <div className="text-xs opacity-70 mb-2 flex items-center gap-1"><Users size={10}/> {t.capacity}</div>
                                         
                                         {t.status === 'occupied' && <div className="mt-auto w-full"><div className="text-sm font-bold truncate mb-1" title={t.customer}>{t.customer}</div><div className="flex justify-between text-[10px] bg-white/40 p-1 rounded"><span className="flex gap-1"><Clock size={10}/> {getDuration(t.startTime)}</span><span className="font-mono font-bold">{formatTime(t.startTime)}</span></div></div>}
@@ -340,14 +395,13 @@ service cloud.firestore {
                         <>
                             <div className="p-5 border-b bg-slate-50">
                                 <div className="mb-4 flex items-center justify-between">
-                                    <div><label className="text-[10px] font-bold text-slate-400 uppercase">Meja</label><div className="text-2xl font-bold text-slate-800">{selectedTable.name}</div></div>
-                                    <div className={`px-2 py-1 rounded text-xs font-bold uppercase border ${getStatusColor(selectedTable.status)}`}>{selectedTable.status === 'reserved' ? 'Reservasi' : selectedTable.status}</div>
+                                    <div className="overflow-hidden"><label className="text-[10px] font-bold text-slate-400 uppercase">Meja</label><div className="text-2xl font-bold text-slate-800 truncate">{selectedTable.name}</div></div>
+                                    <div className={`px-2 py-1 rounded text-xs font-bold uppercase border ${getStatusColor(selectedTable.status)} shrink-0 ml-2`}>{selectedTable.status === 'reserved' ? 'Reservasi' : selectedTable.status}</div>
                                 </div>
                                 <div className="grid grid-cols-2 gap-3">
                                     <div><label className="text-[10px] text-slate-400 uppercase">Kapasitas</label><input type="number" defaultValue={selectedTable.capacity} onBlur={(e)=>updateTableStatus(selectedTableId, {capacity: parseInt(e.target.value)})} className="w-full p-1 text-sm border rounded"/></div>
                                     <div>
                                         <label className="text-[10px] text-slate-400 uppercase">Posisi</label>
-                                        {/* PILIHAN POSISI LENGKAP */}
                                         <select value={selectedTable.type} onChange={(e)=>updateTableStatus(selectedTableId, {type: e.target.value})} className="w-full p-1 text-sm border rounded cursor-pointer">
                                             <option value="Indoor">Indoor</option>
                                             <option value="Indoor Depan">Indoor Depan</option>
@@ -392,14 +446,13 @@ service cloud.firestore {
                                             </div>
                                         </div>
                                         
-                                        {/* BAGIAN MENU MAKANAN (PENGGANTI TAGIHAN BESAR) */}
                                         <div className="flex flex-col h-full">
                                             <div className="flex items-center gap-2 mb-2">
                                                 <FileText size={16} className="text-slate-400"/>
                                                 <label className="text-xs font-bold text-slate-500 uppercase">Daftar Menu</label>
                                             </div>
                                             
-                                            <div className="bg-white border border-slate-200 rounded-lg p-3 max-h-48 overflow-y-auto shadow-sm">
+                                            <div className="bg-white border border-slate-200 rounded-lg p-3 max-h-48 overflow-y-auto shadow-sm menu-list">
                                                 {selectedTable.items && selectedTable.items.length > 0 ? (
                                                     <ul className="text-sm space-y-2">
                                                         {selectedTable.items.map((item, idx) => (
