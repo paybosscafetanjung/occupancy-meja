@@ -24,17 +24,20 @@
         .menu-list::-webkit-scrollbar { width: 4px; }
         .menu-list::-webkit-scrollbar-track { background: #f1f1f1; }
         .menu-list::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 2px; }
+        /* Hide scrollbar for tab navigation */
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
     </style>
 </head>
 <body class="bg-slate-100 text-slate-800 font-sans">
     <div id="root"></div>
     <script type="text/babel" data-type="module">
-        import React, { useState, useEffect } from 'react';
+        import React, { useState, useEffect, useMemo } from 'react';
         import { createRoot } from 'react-dom/client';
         import { 
             Users, Clock, Coffee, CheckCircle, Trash2, RefreshCw, 
             MapPin, AlertCircle, Database, LogIn, LogOut, Lock, 
-            ShieldAlert, Copy, Activity, ArrowRightLeft, Edit3, Calendar, User, CalendarClock, XCircle, FileText, Music, Crown
+            ShieldAlert, Copy, Activity, ArrowRightLeft, Edit3, Calendar, User, CalendarClock, XCircle, FileText, Music, Crown, Filter
         } from 'lucide-react';
         
         import { initializeApp } from 'firebase/app';
@@ -82,6 +85,9 @@ service cloud.firestore {
             const [email, setEmail] = useState('');
             const [password, setPassword] = useState('');
             const [isLoggingIn, setIsLoggingIn] = useState(false);
+            
+            // --- NEW: STATE FILTER POSISI ---
+            const [activeFilter, setActiveFilter] = useState('Semua');
 
             useEffect(() => {
                 const unsubscribe = onAuthStateChanged(auth, (u) => {
@@ -237,6 +243,7 @@ service cloud.firestore {
                 if (t.includes('outdoor')) return 'bg-orange-100 text-orange-700';
                 if (t.includes('lantai 2')) return 'bg-indigo-100 text-indigo-700';
                 if (t.includes('depan')) return 'bg-sky-100 text-sky-700';
+                if (t.includes('meeting')) return 'bg-cyan-100 text-cyan-700';
                 return 'bg-blue-100 text-blue-700';
             };
 
@@ -262,8 +269,19 @@ service cloud.firestore {
                 if (newName && newName !== selectedTable.customer) updateTableStatus(selectedTableId, { customer: newName });
             };
 
-            // --- HELPERS (FIXED) ---
-            // Memastikan semua variabel yang dipakai di JSX didefinisikan di sini
+            // --- FILTER LOGIC ---
+            // 1. Ambil daftar lokasi unik
+            const locations = useMemo(() => {
+                const locs = new Set(tables.map(t => t.type));
+                return ['Semua', ...Array.from(locs).sort()];
+            }, [tables]);
+
+            // 2. Filter meja berdasarkan tab aktif
+            const filteredTables = useMemo(() => {
+                if (activeFilter === 'Semua') return tables;
+                return tables.filter(t => t.type === activeFilter);
+            }, [tables, activeFilter]);
+
             const selectedTable = tables.find(t => t.id === selectedTableId);
             const totalTables = tables.length;
             const occupied = tables.filter(t => t.status === 'occupied').length;
@@ -298,15 +316,39 @@ service cloud.firestore {
                             </div>
                         </header>
 
+                        {/* --- NAVIGATION TABS BARU --- */}
+                        <div className="bg-white border-b px-4 py-2 flex gap-2 overflow-x-auto no-scrollbar whitespace-nowrap shadow-sm">
+                            {locations.map(loc => {
+                                // Hitung jumlah meja per lokasi untuk badge
+                                const count = loc === 'Semua' ? tables.length : tables.filter(t => t.type === loc).length;
+                                return (
+                                    <button 
+                                        key={loc}
+                                        onClick={() => setActiveFilter(loc)}
+                                        className={`px-4 py-1.5 rounded-full text-xs font-bold border flex items-center gap-2 transition-all ${
+                                            activeFilter === loc 
+                                            ? 'bg-slate-800 text-white border-slate-800' 
+                                            : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+                                        }`}
+                                    >
+                                        {loc}
+                                        <span className={`px-1.5 py-0.5 rounded text-[10px] ${activeFilter === loc ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-500'}`}>
+                                            {count}
+                                        </span>
+                                    </button>
+                                );
+                            })}
+                        </div>
+
                         <main className="flex-1 overflow-auto p-4 flex flex-col">
                             {loading ? <div className="flex-1 flex items-center justify-center text-slate-400"><RefreshCw className="animate-spin"/></div> :
                             tables.length===0 ? <div className="flex-1 flex items-center justify-center text-slate-400">Database Kosong. Klik Setup Meja (Reset).</div> :
                             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3 pb-8">
-                                {tables.map(t => (
+                                {/* GUNAKAN filteredTables BUKAN tables */}
+                                {filteredTables.map(t => (
                                     <button key={t.id} onClick={()=>{setSelectedTableId(t.id); setIsReserving(false);}} className={`relative p-3 rounded-lg border-2 transition-all flex flex-col items-start min-h-[110px] shadow-sm text-left ${selectedTableId===t.id?'ring-2 ring-blue-400 scale-[1.02] z-10':''} ${getStatusColor(t.status)}`}>
                                         <div className="flex justify-between w-full mb-1">
                                             <span className="font-bold text-lg truncate pr-1">{t.name}</span>
-                                            {/* POSISI FONT DIPERBESAR */}
                                             <span className={`text-xs font-bold px-2 py-1 rounded truncate max-w-[120px] ${getLocationColor(t.type)}`}>{t.type}</span>
                                         </div>
                                         <div className="text-xs opacity-70 mb-2 flex items-center gap-1"><Users size={10}/> {t.capacity}</div>
