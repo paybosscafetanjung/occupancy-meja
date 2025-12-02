@@ -4,11 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Payboss Floor Monitor</title>
-    
-    <!-- 1. Tailwind CSS (Styling) -->
     <script src="https://cdn.tailwindcss.com"></script>
-    
-    <!-- 2. Import Map -->
     <script type="importmap">
     {
       "imports": {
@@ -21,44 +17,26 @@
       }
     }
     </script>
-
-    <!-- 3. Babel -->
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-
     <style>
-        /* Animasi Kustom */
-        @keyframes pulse-slow {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.5; }
-        }
-        .animate-pulse-slow {
-            animation: pulse-slow 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
-        }
+        @keyframes pulse-slow { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+        .animate-pulse-slow { animation: pulse-slow 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
     </style>
 </head>
 <body class="bg-slate-100 text-slate-800 font-sans">
-    
-    <!-- Container Aplikasi React -->
     <div id="root"></div>
-
-    <!-- KODE APLIKASI UTAMA -->
     <script type="text/babel" data-type="module">
         import React, { useState, useEffect } from 'react';
         import { createRoot } from 'react-dom/client';
         import { 
             Users, Clock, Coffee, CheckCircle, Trash2, RefreshCw, 
             MapPin, AlertCircle, Database, LogIn, LogOut, Lock, 
-            ShieldAlert, Copy, Activity, ArrowRightLeft, Edit3 
+            ShieldAlert, Copy, Activity, ArrowRightLeft, Edit3, Calendar, User, CalendarClock, XCircle
         } from 'lucide-react';
         
         import { initializeApp } from 'firebase/app';
-        import { 
-            getFirestore, collection, doc, onSnapshot, updateDoc, 
-            writeBatch, getDocs, query, where, setDoc, limit 
-        } from 'firebase/firestore';
-        import { 
-            getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged 
-        } from 'firebase/auth';
+        import { getFirestore, collection, doc, onSnapshot, updateDoc, writeBatch, getDocs, query, limit } from 'firebase/firestore';
+        import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged } from 'firebase/auth';
 
         // --- KONFIGURASI FIREBASE ---
         const firebaseConfig = {
@@ -74,25 +52,14 @@
         const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
         const db = getFirestore(app);
-
         const COLLECTION_NAME = 'tables'; 
 
-        // RULES TEXT
         const FULL_FIRESTORE_RULES = `rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
     function isStaff() { return request.auth != null; }
-    
-    // --- ATURAN MEJA (FLOOR MONITOR) ---
-    match /tables/{tableId} {
-      allow read, write: if isStaff();
-    }
-
-    // ... aturan lainnya ...
-    match /orders/{orderId} {
-      allow read: if isStaff();
-       // ...
-    }
+    match /tables/{tableId} { allow read, write: if isStaff(); }
+    match /orders/{orderId} { allow read: if isStaff(); }
   }
 }`;
 
@@ -103,707 +70,325 @@ service cloud.firestore {
             const [currentTime, setCurrentTime] = useState(new Date());
             const [loading, setLoading] = useState(true);
             
-            // States Debugging & Sync
+            // States UI
             const [errorMsg, setErrorMsg] = useState('');
             const [permissionError, setPermissionError] = useState(false); 
             const [statusLog, setStatusLog] = useState('Siap.');
             const [isSettingUp, setIsSettingUp] = useState(false);
             const [isSyncing, setIsSyncing] = useState(false);
 
+            // States Reservasi
+            const [isReserving, setIsReserving] = useState(false);
+            const [resName, setResName] = useState('');
+            const [resTime, setResTime] = useState('');
+
             // Auth States
             const [email, setEmail] = useState('');
             const [password, setPassword] = useState('');
             const [isLoggingIn, setIsLoggingIn] = useState(false);
 
-            // 1. Cek Status Login
             useEffect(() => {
-                const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
-                setUser(currentUser);
-                if (currentUser) {
-                    setLoading(true);
-                    setPermissionError(false); 
-                    setStatusLog(`Login berhasil: ${currentUser.email}`);
-                } else {
-                    setLoading(false);
-                    setTables([]);
-                    setStatusLog("Belum login.");
-                }
+                const unsubscribe = onAuthStateChanged(auth, (u) => {
+                    setUser(u);
+                    if (u) { setLoading(true); setPermissionError(false); setStatusLog(`Login: ${u.email}`); }
+                    else { setLoading(false); setTables([]); setStatusLog("Belum login."); }
                 });
                 return () => unsubscribe;
             }, []);
 
-            // 2. Listener Data (Realtime)
             useEffect(() => {
                 if (!user) return;
-
-                setStatusLog("Menghubungkan ke database...");
-                const tablesRef = collection(db, COLLECTION_NAME);
-                
-                const unsubscribe = onSnapshot(tablesRef, (snapshot) => {
-                const fetchedTables = snapshot.docs.map(doc => {
-                    const data = doc.data();
-                    return {
-                    id: doc.id,
-                    ...data,
-                    startTime: data.startTime && data.startTime.seconds 
-                        ? new Date(data.startTime.seconds * 1000) 
-                        : null
-                    };
+                const unsubscribe = onSnapshot(collection(db, COLLECTION_NAME), (snap) => {
+                    const data = snap.docs.map(d => ({ 
+                        id: d.id, ...d.data(), 
+                        startTime: d.data().startTime?.seconds ? new Date(d.data().startTime.seconds * 1000) : null 
+                    }));
+                    data.sort((a, b) => (a.tableNumber || 0) - (b.tableNumber || 0));
+                    setTables(data); setLoading(false); setPermissionError(false);
+                }, (err) => {
+                    console.error(err);
+                    if (err.code === 'permission-denied') { setPermissionError(true); setLoading(false); }
+                    else { setErrorMsg(err.message); setLoading(false); }
                 });
-                
-                fetchedTables.sort((a, b) => {
-                    const numA = a.tableNumber || parseInt(a.id.replace(/\D/g,'')) || 0;
-                    const numB = b.tableNumber || parseInt(b.id.replace(/\D/g,'')) || 0;
-                    return numA - numB;
-                });
-                
-                setTables(fetchedTables);
-                setLoading(false);
-                setPermissionError(false);
-                }, (error) => {
-                console.error("Firestore Error:", error);
-                
-                if (error.code === 'permission-denied') {
-                    setPermissionError(true);
-                    setLoading(false);
-                } else {
-                    setErrorMsg(`Gagal memuat data: ${error.message}`);
-                    setLoading(false);
-                }
-                });
-
                 return () => unsubscribe();
             }, [user]);
 
-            // PERBAIKAN: Update waktu setiap 5 DETIK (bukan 60 detik) agar durasi terlihat jalan
             useEffect(() => {
                 const timer = setInterval(() => setCurrentTime(new Date()), 5000);
                 return () => clearInterval(timer);
             }, []);
 
-            // --- FUNGSI AUTH ---
             const handleLogin = async (e) => {
-                e.preventDefault();
-                setIsLoggingIn(true);
-                setErrorMsg('');
-                setPermissionError(false);
-
-                try {
-                await signInWithEmailAndPassword(auth, email, password);
-                } catch (error) {
-                console.error("Login Gagal:", error);
-                setErrorMsg("Email atau Password salah.");
-                setIsLoggingIn(false);
-                }
+                e.preventDefault(); setIsLoggingIn(true); setErrorMsg('');
+                try { await signInWithEmailAndPassword(auth, email, password); } 
+                catch (error) { setErrorMsg("Email/Password salah."); setIsLoggingIn(false); }
             };
 
-            const handleLogout = async () => {
-                await signOut(auth);
-                setEmail('');
-                setPassword('');
-                setPermissionError(false);
-            };
+            const handleLogout = async () => { await signOut(auth); setEmail(''); setPassword(''); };
 
-            // --- ACTIONS UTAMA ---
             const initializeDatabase = async () => {
-                if (!user) return;
-                
-                setIsSettingUp(true);
-                setStatusLog("Memulai proses setup batch...");
-
+                if (!user) return; setIsSettingUp(true);
                 try {
-                const batch = writeBatch(db);
-                
-                for (let i = 1; i <= 26; i++) {
-                    const tableId = `table-${i.toString().padStart(2, '0')}`; 
-                    const tableRef = doc(db, COLLECTION_NAME, tableId);
-                    let type = 'Indoor';
-                    if (i > 15) type = 'Outdoor';
-                    if (i > 22) type = 'VIP';
-
-                    batch.set(tableRef, {
-                    tableNumber: i,
-                    name: `T-${i.toString().padStart(2, '0')}`,
-                    type: type,
-                    capacity: i % 2 === 0 ? 4 : 2,
-                    status: 'empty', 
-                    customer: '',
-                    startTime: null,
-                    total: 0,
-                    items: []
-                    }, { merge: true });
-                }
-
-                await batch.commit();
-                
-                setStatusLog("Setup Berhasil!");
-                alert("Sukses! 26 Meja berhasil dibuat.");
-                setPermissionError(false);
-                } catch (err) {
-                console.error(err);
-                setStatusLog(`GAGAL SETUP: ${err.message}`);
-                
-                if (err.code === 'permission-denied') {
-                    setPermissionError(true);
-                } else {
-                    alert("Gagal: " + err.message);
-                }
-                }
+                    const batch = writeBatch(db);
+                    for (let i = 1; i <= 26; i++) {
+                        const tId = `table-${i.toString().padStart(2, '0')}`;
+                        const type = i > 22 ? 'VIP' : i > 15 ? 'Outdoor' : 'Indoor';
+                        batch.set(doc(db, COLLECTION_NAME, tId), {
+                            tableNumber: i, name: `T-${i.toString().padStart(2, '0')}`, type, capacity: 4, status: 'empty', customer: '', startTime: null, total: 0, items: []
+                        }, { merge: true });
+                    }
+                    await batch.commit(); alert("Sukses Setup Meja!");
+                } catch (err) { err.code === 'permission-denied' ? setPermissionError(true) : alert(err.message); }
                 setIsSettingUp(false);
             };
 
-            // --- FITUR SINKRONISASI POS (OPTIMIZED & FIX TIME) ---
             const syncFromPOS = async () => {
-                if (!user) return;
-                setIsSyncing(true);
-                setStatusLog("Scanning POS (Hemat Mode)...");
-
+                if (!user) return; setIsSyncing(true); setStatusLog("Scanning POS...");
                 try {
-                    const ordersRef = collection(db, 'orders');
-                    
-                    const q = query(ordersRef, limit(50)); 
-                    const querySnapshot = await getDocs(q);
-                    
-                    const activeOrders = [];
-                    querySnapshot.forEach((doc) => {
-                        const data = doc.data();
-                        if (data.status !== 'completed' && data.status !== 'voided' && data.table) {
-                            activeOrders.push({
-                                tableNumber: data.table, 
-                                customer: data.customerName || 'Tamu POS',
-                                total: data.total || 0,
-                                id: doc.id
-                            });
-                        }
-                    });
-
-                    setStatusLog(`Ditemukan ${activeOrders.length} pesanan aktif.`);
-
+                    const snap = await getDocs(query(collection(db, 'orders'), limit(50)));
                     const batch = writeBatch(db);
-                    let updateCount = 0;
-                    let newTablesCount = 0;
-
-                    activeOrders.forEach(order => {
-                        const tableIdRaw = order.tableNumber.toString().padStart(2, '0');
-                        const tableId = `table-${tableIdRaw}`;
-                        const tableRef = doc(db, COLLECTION_NAME, tableId);
-
-                        const existingTable = tables.find(t => t.id === tableId);
-
-                        if (existingTable) {
-                            // Cek jika status sebelumnya kosong, maka SET WAKTU MULAI SEKARANG
-                            // Ini penting agar menitnya mulai jalan dari 0
-                            if (existingTable.status !== 'occupied') {
-                                batch.update(tableRef, {
-                                    status: 'occupied',
-                                    customer: order.customer,
-                                    total: order.total,
-                                    startTime: new Date() // Reset waktu mulai
-                                });
-                                updateCount++;
-                            } else if (existingTable.customer !== order.customer) {
-                                // Jika pelanggan beda (ganti tamu tapi belum checkout), update nama saja
-                                batch.update(tableRef, {
-                                    customer: order.customer,
-                                    total: order.total
-                                });
-                                updateCount++;
-                            }
-                        } else {
-                            // Meja baru -> WAJIB CREATE dengan startTime sekarang
-                            newTablesCount++;
-                            const tNum = parseInt(order.tableNumber);
-                            let type = 'Indoor';
-                            if (tNum > 15) type = 'Outdoor'; 
+                    let count = 0;
+                    snap.forEach(d => {
+                        const data = d.data();
+                        const name = data.customerName || data.name || data.customer || (data.queueNumber ? `Antrian #${data.queueNumber}` : 'Tamu POS');
+                        if (data.status !== 'completed' && data.status !== 'voided' && data.table) {
+                            const tId = `table-${data.table.toString().padStart(2, '0')}`;
+                            const existing = tables.find(t => t.id === tId);
+                            const tNum = parseInt(data.table);
+                            const type = tNum > 15 ? 'Outdoor' : 'Indoor';
                             
-                            batch.set(tableRef, {
-                                tableNumber: tNum,
-                                name: `T-${tableIdRaw}`,
-                                type: type, 
-                                capacity: 4, 
-                                status: 'occupied',
-                                customer: order.customer,
-                                total: order.total,
-                                startTime: new Date(), 
-                                items: []
-                            }, { merge: true });
-                            updateCount++;
+                            if (!existing || existing.status !== 'occupied') {
+                                batch.set(doc(db, COLLECTION_NAME, tId), {
+                                    tableNumber: tNum, name: `T-${data.table.toString().padStart(2, '0')}`, type, capacity: 4, 
+                                    status: 'occupied', customer: name, total: data.total || 0, startTime: new Date(), items: []
+                                }, { merge: true });
+                                count++;
+                            }
                         }
                     });
-
-                    if (updateCount > 0) {
-                        await batch.commit();
-                        const msg = `Sukses! Sinkronisasi ${updateCount} data meja.`;
-                        alert(msg);
-                        setStatusLog(msg);
-                    } else {
-                        alert("Semua data sudah sinkron.");
-                        setStatusLog("Data POS sinkron.");
-                    }
-
-                } catch (err) {
-                    console.error(err);
-                    setStatusLog(`Gagal Sinkron: ${err.message}`);
-                    alert(`Gagal baca POS: ${err.message}`);
-                }
+                    if (count > 0) await batch.commit();
+                    setStatusLog(`Sync: ${count} meja.`);
+                } catch (err) { console.error(err); alert(`Gagal: ${err.message}`); }
                 setIsSyncing(false);
             };
 
             const updateTableStatus = async (id, data) => {
-                if (!user) return;
-                try {
-                const tableRef = doc(db, COLLECTION_NAME, id);
-                await updateDoc(tableRef, data);
-                } catch (err) {
-                console.error(err);
-                if (err.code === 'permission-denied') {
-                    setPermissionError(true);
-                } else {
-                    alert("Gagal update: " + err.message);
-                }
-                }
+                try { await updateDoc(doc(db, COLLECTION_NAME, id), data); }
+                catch (err) { err.code === 'permission-denied' ? setPermissionError(true) : alert(err.message); }
             };
 
-            // --- ACTIONS EDITOR ---
-            const handleCheckIn = (customerName) => {
-                if (!selectedTableId) return;
-                updateTableStatus(selectedTableId, {
-                status: 'occupied',
-                customer: customerName || 'Pelanggan',
-                startTime: new Date(), 
-                total: 0,
-                items: []
-                });
-            };
-
-            const handleCheckout = () => {
-                if (!selectedTableId) return;
-                updateTableStatus(selectedTableId, {
-                status: 'dirty',
-                customer: '',
-                startTime: null,
-                total: 0,
-                items: []
-                });
-            };
-
-            const handleClean = () => {
-                if (!selectedTableId) return;
-                updateTableStatus(selectedTableId, {
-                status: 'empty'
-                });
-            };
-
-            const handleLocationChange = (newLocation) => {
-                if (!selectedTableId) return;
-                updateTableStatus(selectedTableId, {
-                type: newLocation
-                });
-            };
-
-            const handleNameUpdate = (e) => {
-                if (!selectedTableId) return;
-                const newName = e.target.value;
-                if (newName && newName !== selectedTable?.name) {
-                    updateTableStatus(selectedTableId, { name: newName });
-                }
-            };
-
-            const handleCapacityUpdate = (e) => {
-                if (!selectedTableId) return;
-                const newCap = parseInt(e.target.value);
-                if (newCap > 0 && newCap !== selectedTable?.capacity) {
-                    updateTableStatus(selectedTableId, { capacity: newCap });
-                }
-            };
-
-            // --- HELPERS ---
+            // HELPERS
             const selectedTable = tables.find(t => t.id === selectedTableId);
             const totalTables = tables.length;
-            const occupiedTables = tables.filter(t => t.status === 'occupied').length;
+            const occupied = tables.filter(t => t.status === 'occupied').length;
+            const reserved = tables.filter(t => t.status === 'reserved').length;
             
-            const occupancyRate = totalTables > 0 ? Math.round((occupiedTables / totalTables) * 100) : 0;
-            
-            // Perbaikan tampilan durasi: jika < 1 menit, tampilkan "<1m" atau "0m"
-            const getDuration = (startTime) => {
-                if (!startTime) return '0m';
-                const diffMs = currentTime - startTime;
-                if (diffMs < 0) return '0m'; // Handle case jam device beda
-
-                const diffMins = Math.floor(diffMs / 60000);
-                const hours = Math.floor(diffMins / 60);
-                const mins = diffMins % 60;
-                
-                return hours > 0 ? `${hours}j ${mins}m` : `${mins}m`;
+            const formatTime = (d) => d ? d.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }) : '-';
+            const getDuration = (start) => {
+                if (!start) return '0m';
+                const m = Math.floor((currentTime - start) / 60000);
+                return m < 0 ? '0m' : `${Math.floor(m/60)}j ${m%60}m`;
             };
 
             const getStatusColor = (status) => {
                 switch (status) {
-                case 'occupied': return 'bg-red-50 border-red-500 text-red-700 hover:bg-red-100';
-                case 'empty': return 'bg-green-50 border-green-500 text-green-700 hover:bg-green-100';
-                case 'dirty': return 'bg-yellow-50 border-yellow-500 text-yellow-700 hover:bg-yellow-100';
-                default: return 'bg-gray-50 border-gray-300';
+                    case 'occupied': return 'bg-red-50 border-red-500 text-red-700 hover:bg-red-100';
+                    case 'reserved': return 'bg-purple-50 border-purple-500 text-purple-700 hover:bg-purple-100';
+                    case 'empty': return 'bg-green-50 border-green-500 text-green-700 hover:bg-green-100';
+                    case 'dirty': return 'bg-yellow-50 border-yellow-500 text-yellow-700 hover:bg-yellow-100';
+                    default: return 'bg-gray-50 border-gray-300';
                 }
             };
 
-            const getLocationColor = (type) => {
-                switch (type) {
-                case 'Indoor': return 'bg-blue-100 text-blue-700';
-                case 'Outdoor': return 'bg-orange-100 text-orange-700';
-                case 'VIP': return 'bg-purple-100 text-purple-700';
-                case 'Lantai 2': return 'bg-indigo-100 text-indigo-700';
-                default: return 'bg-gray-200 text-gray-700';
+            // ACTIONS
+            const handleCheckIn = (name) => {
+                if(!selectedTableId) return;
+                updateTableStatus(selectedTableId, { status: 'occupied', customer: name || 'Pelanggan', startTime: new Date(), total: 0 });
+            };
+            const handleReservation = () => {
+                if(!selectedTableId || !resName || !resTime) return alert("Nama dan Jam wajib diisi!");
+                updateTableStatus(selectedTableId, { status: 'reserved', customer: resName, reservationTime: resTime });
+                setIsReserving(false); setResName(''); setResTime('');
+            };
+            const handleArrival = () => { // Tamu Reservasi Datang
+                if(!selectedTableId) return;
+                updateTableStatus(selectedTableId, { status: 'occupied', startTime: new Date(), reservationTime: null }); // Pertahankan nama customer
+            };
+            const handleCancelRes = () => updateTableStatus(selectedTableId, { status: 'empty', customer: '', reservationTime: null });
+            
+            const handleCheckout = () => updateTableStatus(selectedTableId, { status: 'dirty', customer: '', startTime: null, total: 0 });
+            const handleClean = () => updateTableStatus(selectedTableId, { status: 'empty' });
+            
+            // --- NEW: Rename Customer ---
+            const handleCustomerNameUpdate = (e) => {
+                if (!selectedTableId) return;
+                const newName = e.target.value;
+                if (newName && newName !== selectedTable.customer) {
+                    updateTableStatus(selectedTableId, { customer: newName });
                 }
             };
 
-            const copyToClipboard = (text) => {
-                navigator.clipboard.writeText(text);
-                alert('Kode disalin!');
-            };
-
-            // --- RENDER LOGIN ---
-            if (!user) {
-                return (
+            // Render Login
+            if (!user) return (
                 <div className="min-h-screen bg-slate-100 flex items-center justify-center p-4">
-                    <div className="bg-white p-8 rounded-xl shadow-lg w-full max-w-md border border-slate-200">
-                    <div className="text-center mb-6">
-                        <div className="bg-green-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
-                        <Lock className="w-8 h-8 text-green-600" />
-                        </div>
-                        <h1 className="text-2xl font-bold text-slate-800">Payboss Login</h1>
-                        <p className="text-slate-500 text-sm">Masuk untuk mengakses Floor Monitor</p>
-                    </div>
-
-                    {errorMsg && (
-                        <div className="bg-red-50 text-red-600 p-3 rounded text-sm mb-4 border border-red-100 flex items-center gap-2">
-                        <AlertCircle size={16} /> {errorMsg}
-                        </div>
-                    )}
-
-                    <form onSubmit={handleLogin} className="space-y-4">
-                        <div>
-                        <label className="block text-sm font-medium text-slate-700 mb-1">Email Staff</label>
-                        <input 
-                            type="email" 
-                            required
-                            className="w-full p-3 border rounded-lg focus:ring-2 focus:ring-green-500 outline-none"
-                            placeholder="contoh: manager@payboss.com"
-                            value={email}
-                            onChange={(e) => setEmail(e.target.value)}
-                        />
-                        </div>
-                        <div>
-                        <label className="block text-sm font-medium text-slate-700 mb-1">Password</label>
-                        <input 
-                            type="password" 
-                            required
-                            className="w-full p-3 border rounded-lg focus:ring-2 focus:ring-green-500 outline-none"
-                            placeholder="••••••••"
-                            value={password}
-                            onChange={(e) => setPassword(e.target.value)}
-                        />
-                        </div>
-                        <button 
-                        type="submit" 
-                        disabled={isLoggingIn}
-                        className="w-full py-3 bg-green-600 hover:bg-green-700 text-white font-bold rounded-lg transition-colors flex justify-center items-center gap-2"
-                        >
-                        {isLoggingIn ? <RefreshCw className="animate-spin" /> : <LogIn size={20} />}
-                        {isLoggingIn ? 'Memproses...' : 'Masuk Sistem'}
-                        </button>
-                    </form>
+                    <div className="bg-white p-8 rounded-xl shadow-lg w-full max-w-md border">
+                        <div className="text-center mb-6"><div className="bg-green-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4"><Lock className="w-8 h-8 text-green-600" /></div><h1 className="text-2xl font-bold">Payboss Login</h1></div>
+                        {errorMsg && <div className="bg-red-50 text-red-600 p-3 rounded text-sm mb-4 flex items-center gap-2"><AlertCircle size={16}/>{errorMsg}</div>}
+                        <form onSubmit={handleLogin} className="space-y-4">
+                            <input type="email" required className="w-full p-3 border rounded" placeholder="Email Staff" value={email} onChange={e=>setEmail(e.target.value)}/>
+                            <input type="password" required className="w-full p-3 border rounded" placeholder="Password" value={password} onChange={e=>setPassword(e.target.value)}/>
+                            <button disabled={isLoggingIn} className="w-full py-3 bg-green-600 text-white font-bold rounded flex justify-center gap-2">{isLoggingIn?<RefreshCw className="animate-spin"/>:<LogIn/>} Masuk</button>
+                        </form>
                     </div>
                 </div>
-                );
-            }
+            );
 
-            // --- RENDER MAIN APP ---
             return (
                 <div className="flex h-screen bg-slate-100 font-sans text-slate-800 overflow-hidden">
-                
-                {/* MODAL PERMISSION ERROR */}
-                {permissionError && (
-                    <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
-                    <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[90vh]">
-                        <div className="bg-red-600 p-4 text-white flex items-center gap-3">
-                        <ShieldAlert size={28} />
-                        <div>
-                            <h2 className="text-xl font-bold">Akses Database Ditolak</h2>
-                            <p className="text-red-100 text-sm">Rules Firestore Anda memblokir akses ke koleksi 'tables'.</p>
-                        </div>
-                        </div>
-                        <div className="p-6 overflow-y-auto">
-                        <p className="text-sm mb-2 text-slate-600">Salin kode ini ke tab <strong>Firestore Rules</strong>:</p>
-                        <div className="relative group">
-                            <button 
-                                onClick={() => copyToClipboard(FULL_FIRESTORE_RULES)}
-                                className="absolute top-2 right-2 bg-slate-700 text-white text-xs px-2 py-1 rounded hover:bg-slate-900 flex items-center gap-1"
-                            >
-                                <Copy size={12} /> Salin
-                            </button>
-                            <pre className="bg-slate-900 text-green-400 p-4 rounded-lg text-xs font-mono overflow-x-auto whitespace-pre-wrap">
-                                {FULL_FIRESTORE_RULES}
-                            </pre>
-                        </div>
-                        </div>
-                        <div className="p-4 border-t bg-slate-50 flex justify-end">
-                        <button onClick={() => window.location.reload()} className="px-6 py-2 bg-blue-600 text-white font-bold rounded">
-                            Saya Sudah Publish Rules, Refresh
-                        </button>
-                        </div>
-                    </div>
-                    </div>
-                )}
+                    {permissionError && <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4"><div className="bg-white p-6 rounded-xl max-w-md"><h2 className="text-xl font-bold text-red-600 mb-2">Akses Ditolak</h2><p>Cek Rules Firestore.</p><button onClick={()=>navigator.clipboard.writeText(FULL_FIRESTORE_RULES)} className="mt-4 bg-slate-800 text-white px-4 py-2 rounded text-sm">Salin Rules</button></div></div>}
 
-                {/* MAIN LAYOUT */}
-                <div className="flex-1 flex flex-col overflow-hidden">
-                    <header className="bg-white border-b px-6 py-4 flex justify-between items-center shadow-sm z-10 shrink-0">
-                    <div>
-                        <h1 className="text-xl font-bold text-slate-900 flex items-center gap-2">
-                        <Database className="w-6 h-6 text-green-600" />
-                        Payboss Floor
-                        </h1>
-                        <p className="text-xs text-slate-500 mt-1 flex items-center gap-1">
-                        <span className="w-2 h-2 rounded-full bg-green-500"></span>
-                        {user.email}
-                        </p>
-                    </div>
-                    
-                    <div className="flex gap-3 items-center">
-                        <button 
-                            onClick={syncFromPOS}
-                            disabled={isSyncing}
-                            className={`px-3 py-2 text-white text-xs font-bold rounded flex items-center gap-2 ${isSyncing ? 'bg-orange-400' : 'bg-orange-600 hover:bg-orange-700'}`}
-                        >
-                            {isSyncing ? <RefreshCw className="animate-spin w-3 h-3"/> : <ArrowRightLeft size={14} />}
-                            {isSyncing ? 'Scanning...' : 'SCAN ORDERS'}
-                        </button>
-
-                        {tables.length === 0 && !loading && (
-                        <button 
-                            onClick={initializeDatabase}
-                            disabled={isSettingUp}
-                            className={`px-4 py-2 text-white text-xs font-bold rounded flex items-center gap-2 ${isSettingUp ? 'bg-slate-400' : 'bg-slate-900 hover:bg-slate-700'}`}
-                        >
-                            {isSettingUp ? <RefreshCw className="animate-spin w-3 h-3"/> : <Database size={14} />}
-                            {isSettingUp ? 'Setup...' : 'SETUP MEJA'}
-                        </button>
-                        )}
-
-                        <button 
-                        onClick={handleLogout}
-                        className="px-3 py-2 bg-red-50 text-red-600 rounded border border-red-200 hover:bg-red-100 flex items-center gap-1 text-xs font-bold ml-2"
-                        >
-                        <LogOut size={14} /> Keluar
-                        </button>
-                    </div>
-                    </header>
-
-                    <main className="flex-1 overflow-auto p-4 flex flex-col relative">
-                    {loading ? (
-                        <div className="flex-1 flex items-center justify-center flex-col gap-2 text-slate-400">
-                        <RefreshCw className="animate-spin w-8 h-8 text-green-500" />
-                        <p>Memuat data...</p>
-                        </div>
-                    ) : tables.length === 0 ? (
-                        <div className="flex-1 flex flex-col items-center justify-center text-slate-400">
-                        <AlertCircle size={48} className="mb-2" />
-                        <p className="text-lg font-bold text-slate-600">Database Meja Kosong</p>
-                        <p className="text-sm">Klik tombol hitam <span className="font-bold bg-slate-200 px-1 rounded">SETUP MEJA</span> di atas.</p>
-                        </div>
-                    ) : (
-                        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3 pb-8">
-                        {tables.map(table => (
-                            <button
-                            key={table.id}
-                            onClick={() => setSelectedTableId(table.id)}
-                            className={`relative p-3 rounded-lg border-2 transition-all duration-150 flex flex-col items-start min-h-[110px] shadow-sm text-left
-                                ${selectedTableId === table.id ? 'ring-2 ring-blue-400 ring-offset-2 scale-[1.02] z-10' : ''}
-                                ${getStatusColor(table.status)}
-                            `}
-                            >
-                            <div className="flex justify-between w-full items-start mb-1">
-                                <span className="font-bold text-lg">{table.name}</span>
-                                <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${getLocationColor(table.type)}`}>
-                                {table.type}
-                                </span>
+                    <div className="flex-1 flex flex-col overflow-hidden">
+                        <header className="bg-white border-b px-6 py-4 flex justify-between items-center shadow-sm z-10">
+                            <div><h1 className="text-xl font-bold flex items-center gap-2"><Database className="text-green-600"/> Payboss Floor</h1><p className="text-xs text-slate-500">{user.email}</p></div>
+                            <div className="flex gap-3">
+                                <button onClick={syncFromPOS} disabled={isSyncing} className={`px-3 py-2 text-white text-xs font-bold rounded flex items-center gap-2 ${isSyncing?'bg-orange-400':'bg-orange-600'}`}>{isSyncing?<RefreshCw className="animate-spin w-3 h-3"/>:<ArrowRightLeft size={14}/>} SCAN ORDERS</button>
+                                {tables.length===0 && !loading && <button onClick={initializeDatabase} disabled={isSettingUp} className="px-4 py-2 bg-slate-900 text-white text-xs font-bold rounded">SETUP MEJA</button>}
+                                <button onClick={handleLogout} className="px-3 py-2 border border-red-200 text-red-600 rounded text-xs font-bold flex items-center gap-1"><LogOut size={14}/> Keluar</button>
                             </div>
-                            
-                            <div className="text-xs text-slate-500 mb-2 flex items-center gap-1">
-                                <Users size={10} /> {table.capacity} Pax
+                        </header>
+
+                        <main className="flex-1 overflow-auto p-4 flex flex-col">
+                            {loading ? <div className="flex-1 flex items-center justify-center text-slate-400"><RefreshCw className="animate-spin"/></div> :
+                            tables.length===0 ? <div className="flex-1 flex items-center justify-center text-slate-400">Database Kosong. Klik Setup Meja.</div> :
+                            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3 pb-8">
+                                {tables.map(t => (
+                                    <button key={t.id} onClick={()=>{setSelectedTableId(t.id); setIsReserving(false);}} className={`relative p-3 rounded-lg border-2 transition-all flex flex-col items-start min-h-[110px] shadow-sm text-left ${selectedTableId===t.id?'ring-2 ring-blue-400 scale-[1.02] z-10':''} ${getStatusColor(t.status)}`}>
+                                        <div className="flex justify-between w-full mb-1"><span className="font-bold text-lg">{t.name}</span><span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-white/50">{t.type}</span></div>
+                                        <div className="text-xs opacity-70 mb-2 flex items-center gap-1"><Users size={10}/> {t.capacity}</div>
+                                        
+                                        {t.status === 'occupied' && <div className="mt-auto w-full"><div className="text-sm font-bold truncate mb-1" title={t.customer}>{t.customer}</div><div className="flex justify-between text-[10px] bg-white/40 p-1 rounded"><span className="flex gap-1"><Clock size={10}/> {getDuration(t.startTime)}</span><span className="font-mono font-bold">{formatTime(t.startTime)}</span></div></div>}
+                                        
+                                        {t.status === 'reserved' && <div className="mt-auto w-full text-purple-900"><div className="text-xs font-bold truncate flex items-center gap-1"><CalendarClock size={12}/> {t.customer}</div><div className="text-[10px] mt-1 bg-white/40 p-1 rounded font-bold text-center">Jam: {t.reservationTime}</div></div>}
+                                        
+                                        {t.status === 'empty' && <div className="mt-auto text-xs opacity-60 flex items-center gap-1"><CheckCircle size={12}/> Kosong</div>}
+                                        {t.status === 'dirty' && <div className="mt-auto text-xs font-bold flex items-center gap-1 animate-pulse text-yellow-800"><Trash2 size={12}/> Kotor</div>}
+                                    </button>
+                                ))}
+                            </div>}
+                            <div className="mt-auto pt-2 border-t text-[10px] font-mono text-slate-400 flex justify-between">
+                                <span>{statusLog}</span>
+                                <span>Total: {totalTables} | Terisi: {occupied} | Reservasi: {reserved}</span>
                             </div>
-
-                            {table.status === 'occupied' && (
-                                <div className="mt-auto w-full">
-                                <div className="text-xs font-bold truncate">{table.customer}</div>
-                                <div className="flex items-center gap-1 text-[10px] opacity-80 mt-1">
-                                    <Clock size={10}/> {getDuration(table.startTime)}
-                                </div>
-                                </div>
-                            )}
-                            
-                            {table.status === 'empty' && (
-                                <div className="mt-auto text-xs opacity-60 flex items-center gap-1">
-                                <CheckCircle size={12} /> Kosong
-                                </div>
-                            )}
-
-                            {table.status === 'dirty' && (
-                                <div className="mt-auto text-xs font-bold flex items-center gap-1 animate-pulse text-yellow-700">
-                                <Trash2 size={12} /> Kotor
-                                </div>
-                            )}
-                            </button>
-                        ))}
-                        </div>
-                    )}
-                    
-                    <div className="mt-auto pt-2 border-t text-[10px] font-mono text-slate-400 flex justify-between">
-                        <div className="flex items-center gap-2">
-                            <Activity size={10} /> {statusLog}
-                        </div>
-                        <div>Tables: {tables.length} | Occupancy: {occupancyRate}%</div>
+                        </main>
                     </div>
-                    </main>
-                </div>
 
-                {/* SIDEBAR DETAIL */}
-                <aside className="w-80 bg-white border-l shadow-2xl flex flex-col z-20 shrink-0">
-                    {selectedTable ? (
-                    <>
-                        {/* EDITOR HEADER */}
-                        <div className="p-5 border-b bg-slate-50">
-                        <div className="mb-4">
-                            <label className="text-[10px] font-bold text-slate-400 uppercase mb-1 flex items-center gap-1">
-                            Nama Meja <Edit3 size={10}/>
-                            </label>
-                            <input
-                                key={selectedTable.id} 
-                                type="text"
-                                defaultValue={selectedTable.name}
-                                onBlur={handleNameUpdate}
-                                className="text-2xl font-bold text-slate-800 bg-transparent border-b border-dashed border-slate-300 focus:border-blue-500 focus:outline-none w-full hover:border-slate-400 transition-colors"
-                            />
-                        </div>
-
-                        <div className="grid grid-cols-2 gap-3 mb-4">
-                            <div>
-                                <label className="text-[10px] font-bold text-slate-400 uppercase mb-1 block">Kapasitas</label>
-                                <div className="relative">
-                                    <Users size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"/>
-                                    <input
-                                        key={`cap-${selectedTable.id}`}
-                                        type="number"
-                                        defaultValue={selectedTable.capacity}
-                                        onBlur={handleCapacityUpdate}
-                                        className="w-full pl-9 pr-2 py-2 text-sm border rounded bg-white focus:ring-2 focus:ring-blue-200 outline-none"
-                                    />
+                    <aside className="w-80 bg-white border-l shadow-2xl flex flex-col z-20 shrink-0">
+                        {selectedTable ? (
+                        <>
+                            <div className="p-5 border-b bg-slate-50">
+                                <div className="mb-4 flex items-center justify-between">
+                                    <div><label className="text-[10px] font-bold text-slate-400 uppercase">Meja</label><div className="text-2xl font-bold text-slate-800">{selectedTable.name}</div></div>
+                                    <div className={`px-2 py-1 rounded text-xs font-bold uppercase border ${getStatusColor(selectedTable.status)}`}>{selectedTable.status === 'reserved' ? 'Reservasi' : selectedTable.status}</div>
+                                </div>
+                                <div className="grid grid-cols-2 gap-3">
+                                    <div><label className="text-[10px] text-slate-400 uppercase">Kapasitas</label><input type="number" defaultValue={selectedTable.capacity} onBlur={(e)=>updateTableStatus(selectedTableId, {capacity: parseInt(e.target.value)})} className="w-full p-1 text-sm border rounded"/></div>
+                                    <div><label className="text-[10px] text-slate-400 uppercase">Posisi</label><select value={selectedTable.type} onChange={(e)=>updateTableStatus(selectedTableId, {type: e.target.value})} className="w-full p-1 text-sm border rounded"><option>Indoor</option><option>Outdoor</option><option>VIP</option></select></div>
                                 </div>
                             </div>
-                            <div>
-                                <label className="text-[10px] font-bold text-slate-400 uppercase mb-1 block">Posisi</label>
-                                <select
-                                value={selectedTable.type}
-                                onChange={(e) => handleLocationChange(e.target.value)}
-                                className="w-full text-sm p-2 border rounded bg-white hover:bg-slate-50 focus:ring-2 focus:ring-blue-200 outline-none transition-all cursor-pointer"
-                                >
-                                <option value="Indoor">Indoor</option>
-                                <option value="Outdoor">Outdoor</option>
-                                <option value="Teras">Teras</option>
-                                <option value="VIP">VIP</option>
-                                <option value="Lantai 2">Lantai 2</option>
-                                <option value="Smoking">Smoking</option>
-                                </select>
-                            </div>
-                        </div>
-                        
-                        <div className={`py-1.5 rounded text-xs font-bold uppercase text-center border ${
-                            selectedTable.status === 'occupied' ? 'bg-red-50 text-red-600 border-red-100' : 
-                            selectedTable.status === 'empty' ? 'bg-green-50 text-green-600 border-green-100' : 'bg-yellow-50 text-yellow-600 border-yellow-100'}`}>
-                            Status: {selectedTable.status === 'occupied' ? 'Terisi' : selectedTable.status === 'empty' ? 'Kosong' : 'Kotor'}
-                        </div>
-                        </div>
 
-                        <div className="flex-1 p-5 overflow-y-auto">
-                        {selectedTable.status === 'occupied' && (
-                            <div className="space-y-5">
-                            <div className="bg-blue-50 p-4 rounded-lg border border-blue-100">
-                                <label className="text-xs font-bold text-blue-400 uppercase">Pelanggan</label>
-                                <div className="text-lg font-bold text-slate-800">{selectedTable.customer}</div>
-                                <div className="text-sm text-slate-600 flex items-center gap-1 mt-1">
-                                <Clock size={14} className="text-blue-500" /> 
-                                Durasi: <span className="font-bold">{getDuration(selectedTable.startTime)}</span>
-                                </div>
-                            </div>
-                            {/* Ringkasan bisa ditambahkan lagi jika ada items */}
-                             <div>
-                                <label className="text-xs font-bold text-slate-400 uppercase mb-2 block">Ringkasan</label>
-                                <ul className="text-sm space-y-2">
-                                <li className="flex justify-between border-b pb-1">
-                                    <span className="text-slate-500">Tagihan</span>
-                                    <span className="font-medium">Rp {(selectedTable.total || 0).toLocaleString()}</span>
-                                </li>
-                                </ul>
-                            </div>
-                            </div>
-                        )}
+                            <div className="flex-1 p-5 overflow-y-auto">
+                                {selectedTable.status === 'occupied' && (
+                                    <div className="space-y-4">
+                                        <div className="bg-blue-50 p-4 rounded border border-blue-100">
+                                            {/* RENAME CUSTOMER FEATURE */}
+                                            <div className="group">
+                                                <label className="text-xs font-bold text-blue-400 uppercase flex items-center gap-1">
+                                                    Pelanggan <Edit3 size={10} className="opacity-50"/>
+                                                </label>
+                                                <input 
+                                                    key={`cust-${selectedTable.id}`}
+                                                    type="text" 
+                                                    defaultValue={selectedTable.customer} 
+                                                    onBlur={handleCustomerNameUpdate}
+                                                    onKeyDown={(e) => { if(e.key === 'Enter') e.target.blur(); }}
+                                                    className="text-lg font-bold text-slate-800 w-full bg-transparent border-b border-transparent hover:border-blue-200 focus:border-blue-500 focus:outline-none transition-colors"
+                                                    placeholder="Nama Pelanggan"
+                                                />
+                                            </div>
+                                            
+                                            <div className="mt-2 pt-2 border-t border-blue-200 grid grid-cols-2 gap-2 text-sm">
+                                                <div><span className="text-[10px] text-slate-500 block">Masuk</span><b>{formatTime(selectedTable.startTime)}</b></div>
+                                                <div><span className="text-[10px] text-slate-500 block">Durasi</span><b className="text-blue-600">{getDuration(selectedTable.startTime)}</b></div>
+                                            </div>
+                                        </div>
+                                        <div><label className="text-xs font-bold text-slate-400 uppercase">Tagihan</label><div className="font-mono text-lg">Rp {(selectedTable.total||0).toLocaleString()}</div></div>
+                                    </div>
+                                )}
 
-                        {selectedTable.status === 'empty' && (
-                            <div className="text-center py-8 opacity-60">
-                            <Coffee size={40} className="mx-auto mb-2" />
-                            <p className="text-sm">Siap untuk check-in pelanggan baru.</p>
+                                {selectedTable.status === 'reserved' && (
+                                    <div className="bg-purple-50 p-4 rounded border border-purple-200 text-purple-900">
+                                        <div className="flex items-center gap-2 mb-2"><CalendarClock size={20}/><span className="font-bold text-lg">Data Reservasi</span></div>
+                                        <div className="space-y-2 text-sm">
+                                            {/* RENAME RESERVATION NAME FEATURE */}
+                                            <div className="border-b border-purple-200 pb-1">
+                                                <span className="text-xs opacity-70 block">Atas Nama:</span>
+                                                <input 
+                                                    key={`res-${selectedTable.id}`}
+                                                    type="text" 
+                                                    defaultValue={selectedTable.customer} 
+                                                    onBlur={handleCustomerNameUpdate}
+                                                    onKeyDown={(e) => { if(e.key === 'Enter') e.target.blur(); }}
+                                                    className="font-bold w-full bg-transparent border-b border-transparent hover:border-purple-300 focus:border-purple-500 focus:outline-none transition-colors text-purple-900"
+                                                />
+                                            </div>
+                                            <div className="flex justify-between border-b border-purple-200 pb-1"><span>Jam:</span><b>{selectedTable.reservationTime}</b></div>
+                                        </div>
+                                    </div>
+                                )}
+
+                                {selectedTable.status === 'empty' && !isReserving && (
+                                    <div className="text-center py-8 opacity-60"><Coffee size={40} className="mx-auto mb-2"/><p className="text-sm">Meja Kosong.</p></div>
+                                )}
+
+                                {isReserving && selectedTable.status === 'empty' && (
+                                    <div className="bg-white p-4 rounded border border-purple-200 shadow-sm animate-pulse-slow">
+                                        <h3 className="font-bold text-purple-700 mb-3 flex items-center gap-2"><Edit3 size={14}/> Form Reservasi</h3>
+                                        <div className="space-y-3">
+                                            <div><label className="text-xs font-bold text-slate-500">Nama Pemesan</label><input autoFocus type="text" value={resName} onChange={e=>setResName(e.target.value)} className="w-full p-2 border rounded focus:ring-2 ring-purple-200 outline-none" placeholder="Contoh: Pak Budi"/></div>
+                                            <div><label className="text-xs font-bold text-slate-500">Jam Kedatangan</label><input type="time" value={resTime} onChange={e=>setResTime(e.target.value)} className="w-full p-2 border rounded focus:ring-2 ring-purple-200 outline-none"/></div>
+                                            <div className="flex gap-2 mt-2">
+                                                <button onClick={()=>setIsReserving(false)} className="flex-1 py-2 text-xs bg-slate-200 rounded hover:bg-slate-300">Batal</button>
+                                                <button onClick={handleReservation} className="flex-1 py-2 text-xs bg-purple-600 text-white rounded hover:bg-purple-700 font-bold">Simpan</button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
                             </div>
-                        )}
-                        {selectedTable.status === 'dirty' && (
-                            <div className="text-center py-8">
-                            <RefreshCw size={40} className="mx-auto mb-2 text-yellow-500 animate-spin-slow" />
-                            <p className="text-sm font-bold text-yellow-600">Menunggu Pembersihan</p>
+
+                            <div className="p-5 border-t bg-slate-50 space-y-2">
+                                {selectedTable.status === 'empty' && !isReserving && (
+                                    <>
+                                        <button onClick={()=>handleCheckIn(prompt('Nama Pelanggan:'))} className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded shadow flex justify-center gap-2"><CheckCircle size={18}/> Check-In Sekarang</button>
+                                        <button onClick={()=>setIsReserving(true)} className="w-full py-3 bg-purple-100 hover:bg-purple-200 text-purple-700 font-bold rounded shadow flex justify-center gap-2"><CalendarClock size={18}/> Buat Reservasi</button>
+                                    </>
+                                )}
+
+                                {selectedTable.status === 'reserved' && (
+                                    <>
+                                        <button onClick={handleArrival} className="w-full py-3 bg-green-600 hover:bg-green-700 text-white font-bold rounded shadow flex justify-center gap-2"><User size={18}/> Tamu Datang (Check-In)</button>
+                                        <button onClick={handleCancelRes} className="w-full py-2 bg-red-100 hover:bg-red-200 text-red-600 font-bold rounded flex justify-center gap-2"><XCircle size={18}/> Batal Reservasi</button>
+                                    </>
+                                )}
+
+                                {selectedTable.status === 'occupied' && <button onClick={handleCheckout} className="w-full py-3 bg-red-600 text-white font-bold rounded shadow">Checkout / Bayar</button>}
+                                {selectedTable.status === 'dirty' && <button onClick={handleClean} className="w-full py-3 bg-green-600 text-white font-bold rounded shadow">Meja Sudah Bersih</button>}
                             </div>
-                        )}
-                        </div>
-
-                        <div className="p-5 border-t bg-slate-50 space-y-3">
-                        {selectedTable.status === 'empty' && (
-                            <button 
-                            onClick={() => handleCheckIn(prompt('Nama Pelanggan:'))}
-                            className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded shadow-lg transition-transform active:scale-95 flex items-center justify-center gap-2"
-                            >
-                            <CheckCircle size={18} /> Check-In
-                            </button>
-                        )}
-
-                        {selectedTable.status === 'occupied' && (
-                            <>
-                            <button 
-                                onClick={handleCheckout}
-                                className="w-full py-3 bg-red-600 hover:bg-red-700 text-white font-bold rounded shadow-lg transition-transform active:scale-95"
-                            >
-                                Checkout
-                            </button>
-                            </>
-                        )}
-
-                        {selectedTable.status === 'dirty' && (
-                            <button 
-                            onClick={handleClean}
-                            className="w-full py-3 bg-green-600 hover:bg-green-700 text-white font-bold rounded shadow-lg transition-transform active:scale-95 flex items-center justify-center gap-2"
-                            >
-                            <CheckCircle size={18} /> Meja Sudah Bersih
-                            </button>
-                        )}
-                        </div>
-                    </>
-                    ) : (
-                    <div className="flex-1 flex flex-col items-center justify-center text-slate-400 p-8 text-center bg-slate-50">
-                        <Database size={32} className="mb-2 opacity-50" />
-                        <p className="font-medium">Klik meja untuk melihat detail.</p>
-                    </div>
-                    )}
-                </aside>
+                        </>
+                        ) : <div className="flex-1 flex items-center justify-center text-slate-400 p-8 text-center"><Database size={32} className="mb-2 opacity-50"/><p>Pilih meja.</p></div>}
+                    </aside>
                 </div>
             );
         };
-
         const root = createRoot(document.getElementById('root'));
         root.render(<App />);
     </script>
