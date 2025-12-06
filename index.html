@@ -238,7 +238,7 @@ service cloud.firestore {
             const syncFromPOS = async () => {
                 if (!user) return; setIsSyncing(true); setStatusLog("Scanning POS (Hari Ini)...");
                 try {
-                    const snap = await getDocs(query(collection(db, 'orders'), limit(50))); // Kurangi limit manual juga
+                    const snap = await getDocs(query(collection(db, 'orders'), orderBy('createdAt', 'desc'), limit(50))); // Kurangi limit manual juga
                     const batch = writeBatch(db);
                     let count = 0;
                     
