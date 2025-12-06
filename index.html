@@ -31,16 +31,16 @@
 <body class="bg-slate-100 text-slate-800 font-sans">
     <div id="root"></div>
     <script type="text/babel" data-type="module">
-        import React, { useState, useEffect, useMemo } from 'react';
+        import React, { useState, useEffect, useMemo, useRef } from 'react';
         import { createRoot } from 'react-dom/client';
         import { 
             Users, Clock, Coffee, CheckCircle, Trash2, RefreshCw, 
             MapPin, AlertCircle, Database, LogIn, LogOut, Lock, 
-            ShieldAlert, Copy, Activity, ArrowRightLeft, Edit3, Calendar, User, CalendarClock, XCircle, FileText, Music, Crown, Filter, CheckSquare, Square, RotateCcw
+            ShieldAlert, Copy, Activity, ArrowRightLeft, Edit3, Calendar, User, CalendarClock, XCircle, FileText, Music, Crown, Filter, CheckSquare, Square, RotateCcw, Radio
         } from 'lucide-react';
         
         import { initializeApp } from 'firebase/app';
-        import { getFirestore, collection, doc, onSnapshot, updateDoc, writeBatch, getDocs, query, limit, orderBy } from 'firebase/firestore';
+        import { getFirestore, collection, doc, onSnapshot, updateDoc, writeBatch, getDocs, query, limit, orderBy, where } from 'firebase/firestore';
         import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged } from 'firebase/auth';
 
         const firebaseConfig = {
@@ -75,6 +75,7 @@ service cloud.firestore {
             const [loading, setLoading] = useState(true);
             const [errorMsg, setErrorMsg] = useState('');
             const [permissionError, setPermissionError] = useState(false); 
+            const [quotaError, setQuotaError] = useState(false); // State khusus Quota
             const [statusLog, setStatusLog] = useState('Siap.');
             const [isSettingUp, setIsSettingUp] = useState(false);
             const [isSyncing, setIsSyncing] = useState(false);
@@ -85,6 +86,14 @@ service cloud.firestore {
             const [password, setPassword] = useState('');
             const [isLoggingIn, setIsLoggingIn] = useState(false);
             const [activeFilter, setActiveFilter] = useState('Semua');
+            const [isRealtimeActive, setIsRealtimeActive] = useState(false);
+
+            // Ref untuk menyimpan state tables terbaru tanpa memicu re-render effect
+            const tablesRef = useRef([]);
+
+            useEffect(() => {
+                tablesRef.current = tables;
+            }, [tables]);
 
             useEffect(() => {
                 const unsubscribe = onAuthStateChanged(auth, (u) => {
@@ -108,313 +117,281 @@ service cloud.firestore {
                         if (numA !== numB) return numA - numB;
                         return a.name.localeCompare(b.name);
                     });
-                    setTables(data); setLoading(false); setPermissionError(false);
+                    setTables(data); setLoading(false); setPermissionError(false); setQuotaError(false);
                 }, (err) => {
                     if (err.code === 'permission-denied') { setPermissionError(true); setLoading(false); }
+                    else if (err.code === 'resource-exhausted') { setQuotaError(true); setLoading(false); } // Handle Quota
                     else { setErrorMsg(err.message); setLoading(false); }
                 });
                 return () => unsubscribe();
             }, [user]);
 
-            useEffect(() => {
-                const timer = setInterval(() => setCurrentTime(new Date()), 5000);
-                return () => clearInterval(timer);
-            }, []);
-
-            const handleLogin = async (e) => {
-                e.preventDefault(); setIsLoggingIn(true); setErrorMsg('');
-                try { await signInWithEmailAndPassword(auth, email, password); } 
-                catch (error) { setErrorMsg("Email/Password salah."); setIsLoggingIn(false); }
-            };
-
-            const handleLogout = async () => { await signOut(auth); setEmail(''); setPassword(''); };
-
-            const initializeDatabase = async () => {
-                if (!user) return; setIsSettingUp(true); setStatusLog("Membuat 33 Meja + Room...");
-                try {
-                    const batch = writeBatch(db);
-                    for (let i = 1; i <= 33; i++) {
-                        const tId = `table-${i.toString().padStart(2, '0')}`;
-                        let type = 'Indoor';
-                        if (i > 10) type = 'Indoor Depan';
-                        if (i > 15) type = 'Lantai 2';
-                        if (i > 25) type = 'Outdoor Taman';
-                        if (i > 30) type = 'Outdoor Belakang';
-                        
-                        batch.set(doc(db, COLLECTION_NAME, tId), {
-                            tableNumber: i, name: `T-${i.toString().padStart(2, '0')}`, type, capacity: 4, status: 'empty', customer: '', startTime: null, total: 0, items: [], servedItems: {} 
-                        }, { merge: true });
+            // --- HELPER: ITEM AGGREGATOR ---
+            const aggregateItems = (itemsArray) => {
+                const aggregated = {};
+                itemsArray.forEach(itemString => {
+                    const match = itemString.match(/^(\d+)x\s(.+)$/);
+                    if (match) {
+                        const qty = parseInt(match[1]);
+                        const name = match[2].trim();
+                        if (aggregated[name]) aggregated[name] += qty;
+                        else aggregated[name] = qty;
+                    } else {
+                        const name = itemString;
+                        if (aggregated[name]) aggregated[name] += 1;
+                        else aggregated[name] = 1;
                     }
-                    const specialRooms = [
-                        { id: 'table-vip', name: 'VIP Payboss', type: 'VIP Payboss', cap: 8 },
-                        { id: 'table-karaoke-1', name: 'Karaoke 1', type: 'Room Karaoke 1', cap: 6 },
-                        { id: 'table-karaoke-2', name: 'Karaoke 2', type: 'Room Karaoke 2', cap: 6 },
-                        { id: 'table-karaoke-3', name: 'Karaoke 3', type: 'Room Karaoke 3', cap: 6 },
-                    ];
-                    specialRooms.forEach(room => {
-                        batch.set(doc(db, COLLECTION_NAME, room.id), {
-                            tableNumber: 100, name: room.name, type: room.type, capacity: room.cap, status: 'empty', customer: '', startTime: null, total: 0, items: [], servedItems: {}
-                        }, { merge: true });
-                    });
-                    await batch.commit(); alert("Sukses! 33 Meja + VIP + Karaoke berhasil dibuat.");
-                } catch (err) { err.code === 'permission-denied' ? setPermissionError(true) : alert(err.message); }
-                setIsSettingUp(false);
+                });
+                return Object.entries(aggregated).map(([name, qty]) => `${qty}x ${name}`);
             };
 
-            // --- FUNGSI RESET HARIAN (BARU) ---
-            const handleDailyReset = async () => {
+            // 2. LISTENER REALTIME ORDERS (FIXED LOOP)
+            useEffect(() => {
                 if (!user) return;
-                if (!confirm("⚠️ PERINGATAN: Ini akan mengosongkan SEMUA meja.\nApakah Anda yakin ingin menutup hari/shift ini?")) return;
+                setIsRealtimeActive(true);
                 
-                setIsSyncing(true); setStatusLog("Mereset semua meja...");
-                try {
-                    const batch = writeBatch(db);
-                    tables.forEach(t => {
-                        // Reset ke status empty, hapus customer, item, dll
-                        if (t.status !== 'empty') {
-                            const ref = doc(db, COLLECTION_NAME, t.id);
-                            batch.update(ref, {
-                                status: 'empty',
-                                customer: '',
-                                startTime: null,
-                                total: 0,
-                                items: [],
-                                servedItems: {},
-                                reservationTime: null
-                            });
+                // Gunakan limit kecil untuk menghemat kuota
+                const q = query(collection(db, 'orders'), limit(20));
+                
+                const unsubscribeOrders = onSnapshot(q, (snapshot) => {
+                    snapshot.docChanges().forEach((change) => {
+                        if (change.type === "added" || change.type === "modified") {
+                            const data = change.doc.data();
+                            if (data.status !== 'completed' && data.status !== 'voided' && data.table) {
+                                processIncomingOrder(data);
+                            }
                         }
                     });
-                    await batch.commit();
-                    alert("Sukses! Semua meja telah dikosongkan untuk hari baru.");
-                    setStatusLog("Hari baru dimulai.");
-                } catch (err) { console.error(err); alert("Gagal reset: " + err.message); }
-                setIsSyncing(false);
+                }, (err) => {
+                    console.error("Realtime Error:", err);
+                    setIsRealtimeActive(false);
+                    if (err.code === 'resource-exhausted') setQuotaError(true);
+                });
+
+                return () => { setIsRealtimeActive(false); unsubscribeOrders(); };
+            }, [user]); // HAPUS 'tables' DARI DEPENDENCY ARRAY INI
+
+            const processIncomingOrder = async (orderData) => {
+                // Identifikasi Meja
+                let tId = '';
+                let tableName = orderData.table.toString();
+                if (!isNaN(tableName) && parseInt(tableName) > 0) tId = `table-${tableName.padStart(2, '0')}`;
+                else {
+                    if (tableName.includes('VIP')) tId = 'table-vip';
+                    else if (tableName.toLowerCase().includes('karaoke') && tableName.includes('1')) tId = 'table-karaoke-1';
+                    else if (tableName.toLowerCase().includes('karaoke') && tableName.includes('2')) tId = 'table-karaoke-2';
+                    else if (tableName.toLowerCase().includes('karaoke') && tableName.includes('3')) tId = 'table-karaoke-3';
+                    else tId = `table-${tableName.replace(/\s+/g, '-').toLowerCase()}`;
+                }
+
+                // Cek Waktu Order (Hari Ini Saja)
+                let actualOrderTime = new Date();
+                if (orderData.createdAt?.seconds) actualOrderTime = new Date(orderData.createdAt.seconds * 1000);
+                const todayStart = new Date(); todayStart.setHours(0,0,0,0);
+                if (actualOrderTime < todayStart) return;
+
+                // Gunakan tablesRef.current untuk mendapatkan data terbaru tanpa re-subscribe
+                const currentTables = tablesRef.current;
+                const targetTable = currentTables.find(t => t.id === tId);
+                const name = orderData.customerName || orderData.name || orderData.customer || (orderData.queueNumber ? `Antrian #${orderData.queueNumber}` : 'Tamu POS');
+                
+                let newItemsRaw = [];
+                if (orderData.items && Array.isArray(orderData.items)) newItemsRaw = orderData.items.map(i => `${i.qty || 1}x ${i.name || i.menuName || 'Item'}`);
+                else if (orderData.cart && Array.isArray(orderData.cart)) newItemsRaw = orderData.cart.map(i => `${i.qty || 1}x ${i.name || i.menuName || 'Item'}`);
+                
+                try {
+                    const tableRef = doc(db, COLLECTION_NAME, tId);
+                    
+                    if (!targetTable || targetTable.status !== 'occupied') {
+                        const finalItems = aggregateItems(newItemsRaw);
+                        
+                        let type = 'Indoor';
+                        if (tId.includes('karaoke')) type = 'Room Karaoke 1';
+                        if (tId.includes('vip')) type = 'VIP Payboss';
+                        const tNum = parseInt(tableName) || 100;
+                        if (tNum > 10) type = 'Indoor Depan';
+                        if (tNum > 15) type = 'Lantai 2';
+
+                        await writeBatch(db).set(tableRef, {
+                            tableNumber: tNum, name: tableName.length < 3 ? `T-${tableName.padStart(2, '0')}` : tableName,
+                            type, capacity: 4, status: 'occupied', customer: name, total: orderData.total || 0,
+                            startTime: actualOrderTime, items: finalItems, servedItems: {}
+                        }, {merge: true});
+                        setStatusLog(`New Order: ${tableName}`);
+                    } else {
+                        if (targetTable.total !== orderData.total) {
+                            const finalItems = aggregateItems(newItemsRaw);
+                            await updateDoc(tableRef, {
+                                total: orderData.total || 0,
+                                items: finalItems, 
+                                customer: name
+                            });
+                        }
+                    }
+                } catch (err) { 
+                    if (err.code === 'resource-exhausted') setQuotaError(true);
+                    console.error(err); 
+                }
             };
 
-            // --- SYNC PINTAR (FILTER HARI INI) ---
+            // --- SYNC MANUAL ---
             const syncFromPOS = async () => {
                 if (!user) return; setIsSyncing(true); setStatusLog("Scanning POS (Hari Ini)...");
                 try {
-                    // Batasi 100 pesanan terakhir untuk dicek
-                    // Kita akan filter manual tanggalnya di client-side untuk akurasi
-                    const snap = await getDocs(query(collection(db, 'orders'), limit(100)));
+                    const snap = await getDocs(query(collection(db, 'orders'), limit(50))); // Kurangi limit manual juga
                     const batch = writeBatch(db);
                     let count = 0;
                     
-                    // Buat batas waktu Hari Ini (Jam 00:00)
-                    const todayStart = new Date();
-                    todayStart.setHours(0, 0, 0, 0);
+                    const tableOrders = {}; 
+                    const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
 
                     snap.forEach(d => {
                         const data = d.data();
-                        
-                        // Cek Tanggal Pesanan (Wajib ada createdAt)
                         let isToday = true;
-                        if (data.createdAt && data.createdAt.seconds) {
-                            const orderDate = new Date(data.createdAt.seconds * 1000);
-                            if (orderDate < todayStart) isToday = false; 
+                        if (data.createdAt?.seconds) {
+                            if (new Date(data.createdAt.seconds * 1000) < todayStart) isToday = false; 
                         }
 
-                        // Hanya proses jika: Status Aktif, Punya Meja, DAN Pesanan HARI INI
                         if (isToday && data.status !== 'completed' && data.status !== 'voided' && data.table) {
-                            const name = data.customerName || data.name || data.customer || (data.queueNumber ? `Antrian #${data.queueNumber}` : 'Tamu POS');
-                            let menuItems = [];
-                            if (data.items && Array.isArray(data.items)) menuItems = data.items.map(i => `${i.qty || 1}x ${i.name || i.menuName || 'Item'}`);
-                            else if (data.cart && Array.isArray(data.cart)) menuItems = data.cart.map(i => `${i.qty || 1}x ${i.name || i.menuName || 'Item'}`);
-                            if (menuItems.length === 0 && (data.itemName || data.productName)) menuItems.push(`1x ${data.itemName || data.productName}`);
-
                             let tId = '';
                             let tableName = data.table.toString();
                             if (!isNaN(tableName) && parseInt(tableName) > 0) tId = `table-${tableName.padStart(2, '0')}`;
                             else {
                                 if (tableName.includes('VIP')) tId = 'table-vip';
-                                else if (tableName.includes('Karaoke') && tableName.includes('1')) tId = 'table-karaoke-1';
-                                else if (tableName.includes('Karaoke') && tableName.includes('2')) tId = 'table-karaoke-2';
-                                else if (tableName.includes('Karaoke') && tableName.includes('3')) tId = 'table-karaoke-3';
+                                else if (tableName.toLowerCase().includes('karaoke') && tableName.includes('1')) tId = 'table-karaoke-1';
+                                else if (tableName.toLowerCase().includes('karaoke') && tableName.includes('2')) tId = 'table-karaoke-2';
+                                else if (tableName.toLowerCase().includes('karaoke') && tableName.includes('3')) tId = 'table-karaoke-3';
                                 else tId = `table-${tableName.replace(/\s+/g, '-').toLowerCase()}`;
                             }
-                            const existing = tables.find(t => t.id === tId);
-                            let type = 'Indoor';
-                            if (tId.includes('karaoke')) type = 'Room Karaoke';
-                            if (tId.includes('vip')) type = 'VIP Payboss';
 
-                            // Logic Update: Timpa data jika ada pesanan BARU HARI INI
-                            if (!existing || existing.status !== 'occupied' || existing.customer !== name) {
-                                batch.set(doc(db, COLLECTION_NAME, tId), {
-                                    tableNumber: !isNaN(tableName) ? parseInt(tableName) : 100, 
-                                    name: tableName.length < 3 ? `T-${tableName.padStart(2, '0')}` : tableName, 
-                                    type, capacity: 4, status: 'occupied', customer: name, total: data.total || 0, startTime: new Date(), items: menuItems, servedItems: {}
-                                }, { merge: true });
-                                count++;
-                            } else {
-                                // Jika meja/customer sama, update item/total saja (tanpa reset servedItems)
-                                batch.update(doc(db, COLLECTION_NAME, tId), { total: data.total || 0, items: menuItems });
-                                count++;
+                            if (!tableOrders[tId]) tableOrders[tId] = [];
+                            tableOrders[tId].push(data);
+                        }
+                    });
+
+                    Object.keys(tableOrders).forEach(tId => {
+                        const orders = tableOrders[tId];
+                        const lastOrder = orders[orders.length - 1]; 
+                        const name = lastOrder.customerName || lastOrder.name || lastOrder.customer || (lastOrder.queueNumber ? `Antrian #${lastOrder.queueNumber}` : 'Tamu POS');
+                        
+                        let allItemsRaw = [];
+                        let totalSum = 0;
+                        let earliestTime = new Date(); 
+
+                        orders.forEach(o => {
+                            totalSum += (o.total || 0);
+                            if (o.createdAt?.seconds) {
+                                const t = new Date(o.createdAt.seconds * 1000);
+                                if (t < earliestTime) earliestTime = t;
                             }
+                            if (o.items && Array.isArray(o.items)) allItemsRaw.push(...o.items.map(i => `${i.qty || 1}x ${i.name || i.menuName || 'Item'}`));
+                            else if (o.cart && Array.isArray(o.cart)) allItemsRaw.push(...o.cart.map(i => `${i.qty || 1}x ${i.name || i.menuName || 'Item'}`));
+                        });
+
+                        const finalItems = aggregateItems(allItemsRaw);
+                        
+                        const tNum = parseInt(lastOrder.table);
+                        let type = 'Indoor';
+                        if (tId.includes('karaoke')) type = 'Room Karaoke 1';
+                        if (tId.includes('vip')) type = 'VIP Payboss';
+                        if (tNum > 10) type = 'Indoor Depan';
+                        if (tNum > 15) type = 'Lantai 2';
+
+                        const existing = tablesRef.current.find(t => t.id === tId); // Use ref here too
+                        
+                        if (!existing || existing.status !== 'occupied' || existing.total !== totalSum || JSON.stringify(existing.items) !== JSON.stringify(finalItems)) {
+                            const currentServed = existing ? existing.servedItems : {};
+                            
+                            batch.set(doc(db, COLLECTION_NAME, tId), {
+                                tableNumber: !isNaN(lastOrder.table) ? parseInt(lastOrder.table) : 100, 
+                                name: lastOrder.table.toString().length < 3 ? `T-${lastOrder.table.toString().padStart(2, '0')}` : lastOrder.table, 
+                                type, capacity: 4, 
+                                status: 'occupied', 
+                                customer: name, 
+                                total: totalSum, 
+                                startTime: earliestTime, 
+                                items: finalItems, 
+                                servedItems: currentServed
+                            }, { merge: true });
+                            count++;
                         }
                     });
                     
                     if (count > 0) await batch.commit();
-                    setStatusLog(`Sync: ${count} meja aktif hari ini.`);
-                } catch (err) { console.error(err); alert(`Gagal: ${err.message}`); }
+                    setStatusLog(`Sync: ${count} meja diupdate.`);
+                } catch (err) { 
+                    console.error(err); 
+                    if (err.code === 'resource-exhausted') setQuotaError(true);
+                    else alert(`Gagal: ${err.message}`); 
+                }
                 setIsSyncing(false);
             };
 
-            const updateTableStatus = async (id, data) => {
-                try { await updateDoc(doc(db, COLLECTION_NAME, id), data); }
-                catch (err) { err.code === 'permission-denied' ? setPermissionError(true) : alert(err.message); }
-            };
-
+            // ... (Helper Functions & UI tetap sama) ...
+            useEffect(() => { const timer = setInterval(() => setCurrentTime(new Date()), 5000); return () => clearInterval(timer); }, []);
+            const handleLogin = async (e) => { e.preventDefault(); setIsLoggingIn(true); try { await signInWithEmailAndPassword(auth, email, password); } catch (error) { setErrorMsg("Email/Password salah."); setIsLoggingIn(false); } };
+            const handleLogout = async () => { await signOut(auth); setEmail(''); setPassword(''); };
+            const initializeDatabase = async () => { if (!user) return; setIsSettingUp(true); try { const batch = writeBatch(db); for (let i = 1; i <= 33; i++) { const tId = `table-${i.toString().padStart(2, '0')}`; let type = 'Indoor'; if (i > 10) type = 'Indoor Depan'; if (i > 15) type = 'Lantai 2'; if (i > 25) type = 'Outdoor Taman'; if (i > 30) type = 'Outdoor Belakang'; batch.set(doc(db, COLLECTION_NAME, tId), { tableNumber: i, name: `T-${i.toString().padStart(2, '0')}`, type, capacity: 4, status: 'empty', customer: '', startTime: null, total: 0, items: [], servedItems: {} }, { merge: true }); } const specialRooms = [ { id: 'table-vip', name: 'VIP Payboss', type: 'VIP Payboss', cap: 8 }, { id: 'table-karaoke-1', name: 'Karaoke 1', type: 'Room Karaoke 1', cap: 6 }, { id: 'table-karaoke-2', name: 'Karaoke 2', type: 'Room Karaoke 2', cap: 6 }, { id: 'table-karaoke-3', name: 'Karaoke 3', type: 'Room Karaoke 3', cap: 6 }, ]; specialRooms.forEach(room => { batch.set(doc(db, COLLECTION_NAME, room.id), { tableNumber: 100, name: room.name, type: room.type, capacity: room.cap, status: 'empty', customer: '', startTime: null, total: 0, items: [], servedItems: {} }, { merge: true }); }); await batch.commit(); alert("Sukses!"); } catch (err) { err.code === 'permission-denied' ? setPermissionError(true) : alert(err.message); } setIsSettingUp(false); };
+            const handleDailyReset = async () => { if (!user || !confirm("Yakin reset hari?")) return; try { const batch = writeBatch(db); tables.forEach(t => { if (t.status !== 'empty') { batch.update(doc(db, COLLECTION_NAME, t.id), { status: 'empty', customer: '', startTime: null, total: 0, items: [], servedItems: {}, reservationTime: null }); } }); await batch.commit(); } catch (err) { alert("Gagal: " + err.message); } };
+            const updateTableStatus = async (id, data) => { try { await updateDoc(doc(db, COLLECTION_NAME, id), data); } catch (err) { err.code === 'permission-denied' ? setPermissionError(true) : alert(err.message); } };
             const formatTime = (d) => d ? d.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }) : '-';
-            const getDuration = (start) => {
-                if (!start) return '0m';
-                const m = Math.floor((currentTime - start) / 60000);
-                return m < 0 ? '0m' : `${Math.floor(m/60)}j ${m%60}m`;
-            };
-
-            const getStatusColor = (status) => {
-                switch (status) {
-                    case 'occupied': return 'bg-red-50 border-red-500 text-red-700 hover:bg-red-100';
-                    case 'reserved': return 'bg-purple-50 border-purple-500 text-purple-700 hover:bg-purple-100';
-                    case 'empty': return 'bg-green-50 border-green-500 text-green-700 hover:bg-green-100';
-                    case 'dirty': return 'bg-yellow-50 border-yellow-500 text-yellow-700 hover:bg-yellow-100';
-                    default: return 'bg-gray-50 border-gray-300';
-                }
-            };
-
-            const getLocationColor = (type) => {
-                if(!type) return 'bg-gray-200 text-gray-700';
-                const t = type.toLowerCase();
-                if (t.includes('karaoke')) return 'bg-rose-100 text-rose-700';
-                if (t.includes('vip')) return 'bg-purple-100 text-purple-700';
-                if (t.includes('taman')) return 'bg-emerald-100 text-emerald-700';
-                if (t.includes('belakang')) return 'bg-teal-100 text-teal-700';
-                if (t.includes('lantai 2')) return 'bg-indigo-100 text-indigo-700';
-                if (t.includes('depan')) return 'bg-sky-100 text-sky-700';
-                if (t.includes('meeting')) return 'bg-cyan-100 text-cyan-700';
-                return 'bg-blue-100 text-blue-700';
-            };
-
-            const handleCheckIn = (name) => {
-                if(!selectedTableId) return;
-                updateTableStatus(selectedTableId, { status: 'occupied', customer: name || 'Pelanggan', startTime: new Date(), total: 0, items: [], servedItems: {} });
-            };
-            const handleReservation = () => {
-                if(!selectedTableId || !resName || !resTime) return alert("Nama dan Jam wajib diisi!");
-                updateTableStatus(selectedTableId, { status: 'reserved', customer: resName, reservationTime: resTime });
-                setIsReserving(false); setResName(''); setResTime('');
-            };
-            const handleArrival = () => { 
-                if(!selectedTableId) return;
-                updateTableStatus(selectedTableId, { status: 'occupied', startTime: new Date(), reservationTime: null }); 
-            };
+            const getDuration = (start) => { if (!start) return '0m'; const m = Math.floor((currentTime - start) / 60000); return m < 0 ? '0m' : `${Math.floor(m/60)}j ${m%60}m`; };
+            const getStatusColor = (status) => { switch (status) { case 'occupied': return 'bg-red-50 border-red-500 text-red-700 hover:bg-red-100'; case 'reserved': return 'bg-purple-50 border-purple-500 text-purple-700 hover:bg-purple-100'; case 'empty': return 'bg-green-50 border-green-500 text-green-700 hover:bg-green-100'; case 'dirty': return 'bg-yellow-50 border-yellow-500 text-yellow-700 hover:bg-yellow-100'; default: return 'bg-gray-50 border-gray-300'; } };
+            const getLocationColor = (type) => { if(!type) return 'bg-gray-200 text-gray-700'; const t = type.toLowerCase(); if (t.includes('karaoke')) return 'bg-rose-100 text-rose-700'; if (t.includes('vip')) return 'bg-purple-100 text-purple-700'; if (t.includes('taman')) return 'bg-emerald-100 text-emerald-700'; if (t.includes('belakang')) return 'bg-teal-100 text-teal-700'; if (t.includes('lantai 2')) return 'bg-indigo-100 text-indigo-700'; if (t.includes('depan')) return 'bg-sky-100 text-sky-700'; if (t.includes('meeting')) return 'bg-cyan-100 text-cyan-700'; return 'bg-blue-100 text-blue-700'; };
+            const handleCheckIn = (name) => { if(!selectedTableId) return; updateTableStatus(selectedTableId, { status: 'occupied', customer: name || 'Pelanggan', startTime: new Date(), total: 0, items: [], servedItems: {} }); };
+            const handleReservation = () => { if(!selectedTableId || !resName || !resTime) return alert("Wajib isi!"); updateTableStatus(selectedTableId, { status: 'reserved', customer: resName, reservationTime: resTime }); setIsReserving(false); setResName(''); setResTime(''); };
+            const handleArrival = () => { if(!selectedTableId) return; updateTableStatus(selectedTableId, { status: 'occupied', startTime: new Date(), reservationTime: null }); };
             const handleCancelRes = () => updateTableStatus(selectedTableId, { status: 'empty', customer: '', reservationTime: null, servedItems: {} });
             const handleCheckout = () => updateTableStatus(selectedTableId, { status: 'dirty', customer: '', startTime: null, total: 0, items: [], servedItems: {} });
             const handleClean = () => updateTableStatus(selectedTableId, { status: 'empty', items: [], servedItems: {} });
-            const handleCustomerNameUpdate = (e) => {
-                if (!selectedTableId) return;
-                const newName = e.target.value;
-                if (newName && newName !== selectedTable.customer) updateTableStatus(selectedTableId, { customer: newName });
-            };
-            const toggleItemServed = (idx) => {
-                if (!selectedTableId || !selectedTable) return;
-                const currentServed = selectedTable.servedItems || {};
-                const newStatus = !currentServed[idx];
-                updateTableStatus(selectedTableId, { [`servedItems.${idx}`]: newStatus });
-            };
-
-            const locations = useMemo(() => {
-                const locs = new Set();
-                tables.forEach(t => {
-                    if (t.type) {
-                        if (t.type.toLowerCase().includes('karaoke')) {
-                            locs.add('Karaoke');
-                        } else {
-                            locs.add(t.type);
-                        }
-                    }
-                });
-                const sorted = Array.from(locs).sort();
-                return ['Semua', ...sorted];
-            }, [tables]);
-
-            const filteredTables = useMemo(() => {
-                if (activeFilter === 'Semua') return tables;
-                if (activeFilter === 'Karaoke') {
-                    return tables.filter(t => t.type && t.type.toLowerCase().includes('karaoke'));
-                }
-                return tables.filter(t => t.type === activeFilter);
-            }, [tables, activeFilter]);
-
+            const handleCustomerNameUpdate = (e) => { if (!selectedTableId) return; const newName = e.target.value; if (newName && newName !== selectedTable.customer) updateTableStatus(selectedTableId, { customer: newName }); };
+            const toggleItemServed = (idx) => { if (!selectedTableId || !selectedTable) return; const currentServed = selectedTable.servedItems || {}; updateTableStatus(selectedTableId, { [`servedItems.${idx}`]: !currentServed[idx] }); };
+            const locations = useMemo(() => { const locs = new Set(); tables.forEach(t => { if (t.type) { if (t.type.toLowerCase().includes('karaoke')) locs.add('Karaoke'); else locs.add(t.type); } }); return ['Semua', ...Array.from(locs).sort()]; }, [tables]);
+            const filteredTables = useMemo(() => { if (activeFilter === 'Semua') return tables; if (activeFilter === 'Karaoke') return tables.filter(t => t.type && t.type.toLowerCase().includes('karaoke')); return tables.filter(t => t.type === activeFilter); }, [tables, activeFilter]);
             const selectedTable = tables.find(t => t.id === selectedTableId);
             const totalTables = tables.length;
             const occupied = tables.filter(t => t.status === 'occupied').length;
             const reserved = tables.filter(t => t.status === 'reserved').length;
-            const occupancyRate = totalTables > 0 ? Math.round((occupied / totalTables) * 100) : 0;
 
-            if (!user) return (
-                <div className="min-h-screen bg-slate-100 flex items-center justify-center p-4">
-                    <div className="bg-white p-8 rounded-xl shadow-lg w-full max-w-md border">
-                        <div className="text-center mb-6"><div className="bg-green-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4"><Lock className="w-8 h-8 text-green-600" /></div><h1 className="text-2xl font-bold">Payboss Login</h1></div>
-                        {errorMsg && <div className="bg-red-50 text-red-600 p-3 rounded text-sm mb-4 flex items-center gap-2"><AlertCircle size={16}/>{errorMsg}</div>}
-                        <form onSubmit={handleLogin} className="space-y-4">
-                            <input type="email" required className="w-full p-3 border rounded" placeholder="Email Staff" value={email} onChange={e=>setEmail(e.target.value)}/>
-                            <input type="password" required className="w-full p-3 border rounded" placeholder="Password" value={password} onChange={e=>setPassword(e.target.value)}/>
-                            <button disabled={isLoggingIn} className="w-full py-3 bg-green-600 text-white font-bold rounded flex justify-center gap-2">{isLoggingIn?<RefreshCw className="animate-spin"/>:<LogIn/>} Masuk</button>
-                        </form>
-                    </div>
-                </div>
-            );
+            if (!user) return ( <div className="min-h-screen bg-slate-100 flex items-center justify-center p-4"> <div className="bg-white p-8 rounded-xl shadow-lg w-full max-w-md border"> <div className="text-center mb-6"><div className="bg-green-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4"><Lock className="w-8 h-8 text-green-600" /></div><h1 className="text-2xl font-bold">Payboss Login</h1></div> {errorMsg && <div className="bg-red-50 text-red-600 p-3 rounded text-sm mb-4 flex items-center gap-2"><AlertCircle size={16}/>{errorMsg}</div>} <form onSubmit={handleLogin} className="space-y-4"> <input type="email" required className="w-full p-3 border rounded" placeholder="Email Staff" value={email} onChange={e=>setEmail(e.target.value)}/> <input type="password" required className="w-full p-3 border rounded" placeholder="Password" value={password} onChange={e=>setPassword(e.target.value)}/> <button disabled={isLoggingIn} className="w-full py-3 bg-green-600 text-white font-bold rounded flex justify-center gap-2">{isLoggingIn?<RefreshCw className="animate-spin"/>:<LogIn/>} Masuk</button> </form> </div> </div> );
 
             return (
                 <div className="flex h-screen bg-slate-100 font-sans text-slate-800 overflow-hidden">
-                    {permissionError && <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4"><div className="bg-white p-6 rounded-xl max-w-md"><h2 className="text-xl font-bold text-red-600 mb-2">Akses Ditolak</h2><p>Cek Rules Firestore.</p><button onClick={()=>navigator.clipboard.writeText(FULL_FIRESTORE_RULES)} className="mt-4 bg-slate-800 text-white px-4 py-2 rounded text-sm">Salin Rules</button></div></div>}
+                    {/* QUOTA ERROR MODAL */}
+                    {quotaError && (
+                        <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4">
+                            <div className="bg-white p-8 rounded-xl max-w-lg text-center">
+                                <ShieldAlert size={48} className="text-red-600 mx-auto mb-4"/>
+                                <h2 className="text-2xl font-bold text-red-600 mb-2">Kuota Harian Habis</h2>
+                                <p className="text-slate-600 mb-4">
+                                    Batas penggunaan Firebase tercapai. Aplikasi tidak dapat memuat data baru hingga besok.
+                                </p>
+                                <p className="text-sm bg-slate-100 p-2 rounded border text-slate-500 mb-6">
+                                    [code=resource-exhausted]: Quota exceeded.
+                                </p>
+                                <button onClick={() => window.location.reload()} className="px-6 py-2 bg-slate-800 text-white font-bold rounded hover:bg-slate-700">Coba Refresh</button>
+                            </div>
+                        </div>
+                    )}
 
+                    {permissionError && <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4"><div className="bg-white p-6 rounded-xl max-w-md"><h2 className="text-xl font-bold text-red-600 mb-2">Akses Ditolak</h2><p>Cek Rules Firestore.</p><button onClick={()=>navigator.clipboard.writeText(FULL_FIRESTORE_RULES)} className="mt-4 bg-slate-800 text-white px-4 py-2 rounded text-sm">Salin Rules</button></div></div>}
                     <div className="flex-1 flex flex-col overflow-hidden">
                         <header className="bg-white border-b px-6 py-4 flex justify-between items-center shadow-sm z-10">
                             <div><h1 className="text-xl font-bold flex items-center gap-2"><Database className="text-green-600"/> Payboss Floor</h1><p className="text-xs text-slate-500">{user.email}</p></div>
-                            <div className="flex gap-3">
-                                {/* TOMBOL RESET HARIAN (BARU) */}
-                                <button onClick={handleDailyReset} disabled={isSyncing} className="px-3 py-2 bg-red-600 hover:bg-red-700 text-white text-xs font-bold rounded flex items-center gap-2">
-                                    {isSyncing?<RefreshCw className="animate-spin w-3 h-3"/>:<RotateCcw size={14}/>} RESET HARI
-                                </button>
-                                
+                            <div className="flex gap-3 items-center">
+                                <div className={`flex items-center gap-1 text-[10px] px-2 py-1 rounded-full font-bold ${isRealtimeActive ? 'bg-green-100 text-green-700 animate-pulse' : 'bg-gray-200 text-gray-500'}`}><Radio size={10} /> {isRealtimeActive ? 'LIVE' : 'OFFLINE'}</div>
+                                <button onClick={handleDailyReset} className="px-3 py-2 bg-red-600 hover:bg-red-700 text-white text-xs font-bold rounded flex items-center gap-2"><RotateCcw size={14}/> RESET HARI</button>
                                 <button onClick={syncFromPOS} disabled={isSyncing} className={`px-3 py-2 text-white text-xs font-bold rounded flex items-center gap-2 ${isSyncing?'bg-orange-400':'bg-orange-600'}`}>{isSyncing?<RefreshCw className="animate-spin w-3 h-3"/>:<ArrowRightLeft size={14}/>} SCAN ORDERS</button>
                                 <button onClick={initializeDatabase} disabled={isSettingUp} className="px-4 py-2 bg-slate-900 text-white text-xs font-bold rounded">SETUP MEJA</button>
                                 <button onClick={handleLogout} className="px-3 py-2 border border-red-200 text-red-600 rounded text-xs font-bold flex items-center gap-1"><LogOut size={14}/></button>
                             </div>
                         </header>
-
                         <div className="bg-white border-b px-4 py-2 flex gap-2 overflow-x-auto no-scrollbar whitespace-nowrap shadow-sm">
                             {locations.map(loc => {
-                                let count = 0;
-                                if (loc === 'Semua') {
-                                    count = tables.length;
-                                } else if (loc === 'Karaoke') {
-                                    count = tables.filter(t => t.type && t.type.toLowerCase().includes('karaoke')).length;
-                                } else {
-                                    count = tables.filter(t => t.type === loc).length;
-                                }
-
-                                return (
-                                    <button 
-                                        key={loc}
-                                        onClick={() => setActiveFilter(loc)}
-                                        className={`px-4 py-1.5 rounded-full text-xs font-bold border flex items-center gap-2 transition-all ${
-                                            activeFilter === loc 
-                                            ? 'bg-slate-800 text-white border-slate-800' 
-                                            : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
-                                        }`}
-                                    >
-                                        {loc}
-                                        <span className={`px-1.5 py-0.5 rounded text-[10px] ${activeFilter === loc ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-500'}`}>
-                                            {count}
-                                        </span>
-                                    </button>
-                                );
+                                let count = loc === 'Semua' ? tables.length : (loc === 'Karaoke' ? tables.filter(t => t.type && t.type.toLowerCase().includes('karaoke')).length : tables.filter(t => t.type === loc).length);
+                                return (<button key={loc} onClick={() => setActiveFilter(loc)} className={`px-4 py-1.5 rounded-full text-xs font-bold border flex items-center gap-2 transition-all ${activeFilter === loc ? 'bg-slate-800 text-white border-slate-800' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}>{loc}<span className={`px-1.5 py-0.5 rounded text-[10px] ${activeFilter === loc ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-500'}`}>{count}</span></button>);
                             })}
                         </div>
-
                         <main className="flex-1 overflow-auto p-4 flex flex-col">
                             {loading ? <div className="flex-1 flex items-center justify-center text-slate-400"><RefreshCw className="animate-spin"/></div> :
                             tables.length===0 ? <div className="flex-1 flex items-center justify-center text-slate-400">Database Kosong. Klik Setup Meja (Reset).</div> :
@@ -424,30 +401,12 @@ service cloud.firestore {
                                     const servedCount = t.servedItems ? Object.values(t.servedItems).filter(Boolean).length : 0;
                                     const isComplete = totalItems > 0 && totalItems === servedCount;
                                     const progressPercent = totalItems > 0 ? (servedCount / totalItems) * 100 : 0;
-
                                     return (
                                     <button key={t.id} onClick={()=>{setSelectedTableId(t.id); setIsReserving(false);}} className={`relative p-3 rounded-lg border-2 transition-all flex flex-col items-start min-h-[110px] shadow-sm text-left ${selectedTableId===t.id?'ring-2 ring-blue-400 scale-[1.02] z-10':''} ${getStatusColor(t.status)}`}>
-                                        <div className="flex justify-between w-full mb-1">
-                                            <span className="font-bold text-lg truncate pr-1">{t.name}</span>
-                                            <span className={`text-xs font-bold px-2 py-1 rounded truncate max-w-[120px] ${getLocationColor(t.type)}`}>{t.type}</span>
-                                        </div>
+                                        <div className="flex justify-between w-full mb-1"><span className="font-bold text-lg truncate pr-1">{t.name}</span><span className={`text-xs font-bold px-2 py-1 rounded truncate max-w-[120px] ${getLocationColor(t.type)}`}>{t.type}</span></div>
                                         <div className="text-xs opacity-70 mb-2 flex items-center gap-1"><Users size={10}/> {t.capacity}</div>
                                         {t.status === 'occupied' && (
-                                            <div className="mt-auto w-full">
-                                                <div className="text-sm font-bold truncate mb-1" title={t.customer}>{t.customer}</div>
-                                                {totalItems > 0 && (
-                                                    <div className="mb-1 w-full bg-white/50 rounded-full h-1.5 overflow-hidden">
-                                                        <div className={`h-full ${isComplete ? 'bg-green-500' : 'bg-blue-500'}`} style={{width: `${progressPercent}%`}}></div>
-                                                    </div>
-                                                )}
-                                                <div className="flex justify-between text-[10px] bg-white/40 p-1 rounded">
-                                                    <span className="flex gap-1 items-center">
-                                                        {totalItems > 0 && isComplete ? <CheckCircle size={10} className="text-green-600"/> : <Clock size={10}/>} 
-                                                        {totalItems > 0 ? `${servedCount}/${totalItems} Diantar` : getDuration(t.startTime)}
-                                                    </span>
-                                                    <span className="font-mono font-bold">{formatTime(t.startTime)}</span>
-                                                </div>
-                                            </div>
+                                            <div className="mt-auto w-full"><div className="text-sm font-bold truncate mb-1" title={t.customer}>{t.customer}</div>{totalItems > 0 && (<div className="mb-1 w-full bg-white/50 rounded-full h-1.5 overflow-hidden"><div className={`h-full ${isComplete ? 'bg-green-500' : 'bg-blue-500'}`} style={{width: `${progressPercent}%`}}></div></div>)}<div className="flex justify-between text-[10px] bg-white/40 p-1 rounded"><span className="flex gap-1 items-center">{totalItems > 0 && isComplete ? <CheckCircle size={10} className="text-green-600"/> : <Clock size={10}/>} {totalItems > 0 ? `${servedCount}/${totalItems} Diantar` : getDuration(t.startTime)}</span><span className="font-mono font-bold">{formatTime(t.startTime)}</span></div></div>
                                         )}
                                         {t.status === 'reserved' && <div className="mt-auto w-full text-purple-900"><div className="text-xs font-bold truncate flex items-center gap-1"><CalendarClock size={12}/> {t.customer}</div><div className="text-[10px] mt-1 bg-white/40 p-1 rounded font-bold text-center">Jam: {t.reservationTime}</div></div>}
                                         {t.status === 'empty' && <div className="mt-auto text-xs opacity-60 flex items-center gap-1"><CheckCircle size={12}/> Kosong</div>}
@@ -455,116 +414,39 @@ service cloud.firestore {
                                     </button>
                                 )})}
                             </div>}
-                            <div className="mt-auto pt-2 border-t text-[10px] font-mono text-slate-400 flex justify-between">
-                                <div className="flex items-center gap-2"><Activity size={10}/> {statusLog}</div>
-                                <span>Total: {totalTables} | Terisi: {occupied} | Reservasi: {reserved}</span>
-                            </div>
+                            <div className="mt-auto pt-2 border-t text-[10px] font-mono text-slate-400 flex justify-between"><div className="flex items-center gap-2"><Activity size={10}/> {statusLog}</div><span>Total: {totalTables} | Terisi: {occupied} | Reservasi: {reserved}</span></div>
                         </main>
                     </div>
-
                     <aside className="w-80 bg-white border-l shadow-2xl flex flex-col z-20 shrink-0">
                         {selectedTable ? (
                         <>
                             <div className="p-5 border-b bg-slate-50">
-                                <div className="mb-4 flex items-center justify-between">
-                                    <div className="overflow-hidden"><label className="text-[10px] font-bold text-slate-400 uppercase">Meja</label><div className="text-2xl font-bold text-slate-800 truncate">{selectedTable.name}</div></div>
-                                    <div className={`px-2 py-1 rounded text-xs font-bold uppercase border ${getStatusColor(selectedTable.status)} shrink-0 ml-2`}>{selectedTable.status === 'reserved' ? 'Reservasi' : selectedTable.status}</div>
-                                </div>
+                                <div className="mb-4 flex items-center justify-between"><div className="overflow-hidden"><label className="text-[10px] font-bold text-slate-400 uppercase">Meja</label><div className="text-2xl font-bold text-slate-800 truncate">{selectedTable.name}</div></div><div className={`px-2 py-1 rounded text-xs font-bold uppercase border ${getStatusColor(selectedTable.status)} shrink-0 ml-2`}>{selectedTable.status === 'reserved' ? 'Reservasi' : selectedTable.status}</div></div>
                                 <div className="grid grid-cols-2 gap-3">
                                     <div><label className="text-[10px] text-slate-400 uppercase">Kapasitas</label><input type="number" defaultValue={selectedTable.capacity} onBlur={(e)=>updateTableStatus(selectedTableId, {capacity: parseInt(e.target.value)})} className="w-full p-1 text-sm border rounded"/></div>
-                                    <div>
-                                        <label className="text-[10px] text-slate-400 uppercase">Posisi</label>
-                                        <select value={selectedTable.type} onChange={(e)=>updateTableStatus(selectedTableId, {type: e.target.value})} className="w-full p-1 text-sm border rounded cursor-pointer">
-                                            <option value="Indoor">Indoor</option>
-                                            <option value="Indoor Depan">Indoor Depan</option>
-                                            <option value="Outdoor">Outdoor</option>
-                                            <option value="Outdoor Taman">Outdoor Taman</option>
-                                            <option value="Outdoor Belakang">Outdoor Belakang</option>
-                                            <option value="Lantai 2">Lantai 2</option>
-                                            <option value="VIP Utama">VIP Utama</option>
-                                            <option value="VIP Payboss">VIP Payboss</option>
-                                            <option value="Room Meeting 1">Room Meeting 1</option>
-                                            <option value="Room Meeting 2">Room Meeting 2</option>
-                                            <option value="Room Karaoke 1">Room Karaoke 1</option>
-                                            <option value="Room Karaoke 2">Room Karaoke 2</option>
-                                            <option value="Room Karaoke 3">Room Karaoke 3</option>
-                                        </select>
-                                    </div>
+                                    <div><label className="text-[10px] text-slate-400 uppercase">Posisi</label><select value={selectedTable.type} onChange={(e)=>updateTableStatus(selectedTableId, {type: e.target.value})} className="w-full p-1 text-sm border rounded cursor-pointer"><option value="Indoor">Indoor</option><option value="Indoor Depan">Indoor Depan</option><option value="Outdoor">Outdoor</option><option value="Outdoor Taman">Outdoor Taman</option><option value="Outdoor Belakang">Outdoor Belakang</option><option value="Lantai 2">Lantai 2</option><option value="VIP Utama">VIP Utama</option><option value="VIP Payboss">VIP Payboss</option><option value="Room Meeting 1">Room Meeting 1</option><option value="Room Meeting 2">Room Meeting 2</option><option value="Room Karaoke 1">Room Karaoke 1</option><option value="Room Karaoke 2">Room Karaoke 2</option><option value="Room Karaoke 3">Room Karaoke 3</option></select></div>
                                 </div>
                             </div>
-
                             <div className="flex-1 p-5 overflow-y-auto">
                                 {selectedTable.status === 'occupied' && (
                                     <div className="space-y-4">
                                         <div className="bg-blue-50 p-4 rounded border border-blue-100">
-                                            <div className="group">
-                                                <label className="text-xs font-bold text-blue-400 uppercase flex items-center gap-1">Pelanggan <Edit3 size={10} className="opacity-50"/></label>
-                                                <input key={`cust-${selectedTable.id}`} type="text" defaultValue={selectedTable.customer} onBlur={handleCustomerNameUpdate} onKeyDown={(e) => { if(e.key === 'Enter') e.target.blur(); }} className="text-lg font-bold text-slate-800 w-full bg-transparent border-b border-transparent hover:border-blue-200 focus:border-blue-500 focus:outline-none transition-colors" placeholder="Nama Pelanggan"/>
-                                            </div>
-                                            <div className="mt-2 pt-2 border-t border-blue-200 grid grid-cols-2 gap-2 text-sm">
-                                                <div><span className="text-[10px] text-slate-500 block">Masuk</span><b>{formatTime(selectedTable.startTime)}</b></div>
-                                                <div><span className="text-[10px] text-slate-500 block">Durasi</span><b className="text-blue-600">{getDuration(selectedTable.startTime)}</b></div>
-                                            </div>
+                                            <div className="group"><label className="text-xs font-bold text-blue-400 uppercase flex items-center gap-1">Pelanggan <Edit3 size={10} className="opacity-50"/></label><input key={`cust-${selectedTable.id}`} type="text" defaultValue={selectedTable.customer} onBlur={handleCustomerNameUpdate} onKeyDown={(e) => { if(e.key === 'Enter') e.target.blur(); }} className="text-lg font-bold text-slate-800 w-full bg-transparent border-b border-transparent hover:border-blue-200 focus:border-blue-500 focus:outline-none transition-colors" placeholder="Nama Pelanggan"/></div>
+                                            <div className="mt-2 pt-2 border-t border-blue-200 grid grid-cols-2 gap-2 text-sm"><div><span className="text-[10px] text-slate-500 block">Masuk</span><b>{formatTime(selectedTable.startTime)}</b></div><div><span className="text-[10px] text-slate-500 block">Durasi</span><b className="text-blue-600">{getDuration(selectedTable.startTime)}</b></div></div>
                                         </div>
                                         <div className="flex flex-col h-full">
-                                            <div className="flex items-center justify-between gap-2 mb-2">
-                                                <div className="flex items-center gap-2">
-                                                    <FileText size={16} className="text-slate-400"/>
-                                                    <label className="text-xs font-bold text-slate-500 uppercase">Checklist Menu</label>
-                                                </div>
-                                                <span className="text-[10px] text-slate-400">Klik item jika sudah diantar</span>
-                                            </div>
-                                            
+                                            <div className="flex items-center justify-between gap-2 mb-2"><div className="flex items-center gap-2"><FileText size={16} className="text-slate-400"/><label className="text-xs font-bold text-slate-500 uppercase">Checklist Menu</label></div><span className="text-[10px] text-slate-400">Klik item jika sudah diantar</span></div>
                                             <div className="bg-white border border-slate-200 rounded-lg p-3 max-h-64 overflow-y-auto shadow-sm menu-list">
-                                                {selectedTable.items && selectedTable.items.length > 0 ? (
-                                                    <ul className="text-sm space-y-2">
-                                                        {selectedTable.items.map((item, idx) => {
-                                                            const isServed = selectedTable.servedItems && selectedTable.servedItems[idx];
-                                                            return (
-                                                                <li 
-                                                                    key={idx} 
-                                                                    onClick={() => toggleItemServed(idx)}
-                                                                    className={`flex items-start gap-3 p-2 rounded cursor-pointer transition-all ${isServed ? 'bg-green-50' : 'hover:bg-slate-50'}`}
-                                                                >
-                                                                    <div className={`mt-0.5 ${isServed ? 'text-green-500' : 'text-slate-300'}`}>
-                                                                        {isServed ? <CheckSquare size={18} /> : <Square size={18} />}
-                                                                    </div>
-                                                                    <span className={`flex-1 ${isServed ? 'text-green-700 line-through decoration-green-300 decoration-2' : 'text-slate-700'}`}>
-                                                                        {item}
-                                                                    </span>
-                                                                </li>
-                                                            );
-                                                        })}
-                                                    </ul>
-                                                ) : <div className="text-center py-4 text-slate-400 italic text-xs">Belum ada menu yang di-scan.</div>}
+                                                {selectedTable.items && selectedTable.items.length > 0 ? (<ul className="text-sm space-y-2">{selectedTable.items.map((item, idx) => { const isServed = selectedTable.servedItems && selectedTable.servedItems[idx]; return (<li key={idx} onClick={() => toggleItemServed(idx)} className={`flex items-start gap-3 p-2 rounded cursor-pointer transition-all ${isServed ? 'bg-green-50' : 'hover:bg-slate-50'}`}><div className={`mt-0.5 ${isServed ? 'text-green-500' : 'text-slate-300'}`}>{isServed ? <CheckSquare size={18} /> : <Square size={18} />}</div><span className={`flex-1 ${isServed ? 'text-green-700 line-through decoration-green-300 decoration-2' : 'text-slate-700'}`}>{item}</span></li>); })}</ul>) : <div className="text-center py-4 text-slate-400 italic text-xs">Belum ada menu yang di-scan.</div>}
                                             </div>
-                                            
                                             <div className="mt-3 flex justify-between items-center border-t pt-3"><span className="text-sm font-semibold text-slate-500">Total Tagihan</span><span className="font-mono text-lg font-bold text-slate-800">Rp {(selectedTable.total||0).toLocaleString()}</span></div>
                                         </div>
                                     </div>
                                 )}
-                                {selectedTable.status === 'reserved' && (
-                                    <div className="bg-purple-50 p-4 rounded border border-purple-200 text-purple-900">
-                                        <div className="flex items-center gap-2 mb-2"><CalendarClock size={20}/><span className="font-bold text-lg">Data Reservasi</span></div>
-                                        <div className="space-y-2 text-sm">
-                                            <div className="border-b border-purple-200 pb-1"><span className="text-xs opacity-70 block">Atas Nama:</span><input key={`res-${selectedTable.id}`} type="text" defaultValue={selectedTable.customer} onBlur={handleCustomerNameUpdate} onKeyDown={(e) => { if(e.key === 'Enter') e.target.blur(); }} className="font-bold w-full bg-transparent border-b border-transparent hover:border-purple-300 focus:border-purple-500 focus:outline-none transition-colors text-purple-900"/></div>
-                                            <div className="flex justify-between border-b border-purple-200 pb-1"><span>Jam:</span><b>{selectedTable.reservationTime}</b></div>
-                                        </div>
-                                    </div>
-                                )}
+                                {selectedTable.status === 'reserved' && (<div className="bg-purple-50 p-4 rounded border border-purple-200 text-purple-900"><div className="flex items-center gap-2 mb-2"><CalendarClock size={20}/><span className="font-bold text-lg">Data Reservasi</span></div><div className="space-y-2 text-sm"><div className="border-b border-purple-200 pb-1"><span className="text-xs opacity-70 block">Atas Nama:</span><input key={`res-${selectedTable.id}`} type="text" defaultValue={selectedTable.customer} onBlur={handleCustomerNameUpdate} onKeyDown={(e) => { if(e.key === 'Enter') e.target.blur(); }} className="font-bold w-full bg-transparent border-b border-transparent hover:border-purple-300 focus:border-purple-500 focus:outline-none transition-colors text-purple-900"/></div><div className="flex justify-between border-b border-purple-200 pb-1"><span>Jam:</span><b>{selectedTable.reservationTime}</b></div></div></div>)}
                                 {selectedTable.status === 'empty' && !isReserving && <div className="text-center py-8 opacity-60"><Coffee size={40} className="mx-auto mb-2"/><p className="text-sm">Meja Kosong.</p></div>}
-                                {isReserving && selectedTable.status === 'empty' && (
-                                    <div className="bg-white p-4 rounded border border-purple-200 shadow-sm animate-pulse-slow">
-                                        <h3 className="font-bold text-purple-700 mb-3 flex items-center gap-2"><Edit3 size={14}/> Form Reservasi</h3>
-                                        <div className="space-y-3">
-                                            <div><label className="text-xs font-bold text-slate-500">Nama Pemesan</label><input autoFocus type="text" value={resName} onChange={e=>setResName(e.target.value)} className="w-full p-2 border rounded focus:ring-2 ring-purple-200 outline-none" placeholder="Contoh: Pak Budi"/></div>
-                                            <div><label className="text-xs font-bold text-slate-500">Jam Kedatangan</label><input type="time" value={resTime} onChange={e=>setResTime(e.target.value)} className="w-full p-2 border rounded focus:ring-2 ring-purple-200 outline-none"/></div>
-                                            <div className="flex gap-2 mt-2"><button onClick={()=>setIsReserving(false)} className="flex-1 py-2 text-xs bg-slate-200 rounded hover:bg-slate-300">Batal</button><button onClick={handleReservation} className="flex-1 py-2 text-xs bg-purple-600 text-white rounded hover:bg-purple-700 font-bold">Simpan</button></div>
-                                        </div>
-                                    </div>
-                                )}
+                                {isReserving && selectedTable.status === 'empty' && (<div className="bg-white p-4 rounded border border-purple-200 shadow-sm animate-pulse-slow"><h3 className="font-bold text-purple-700 mb-3 flex items-center gap-2"><Edit3 size={14}/> Form Reservasi</h3><div className="space-y-3"><div><label className="text-xs font-bold text-slate-500">Nama Pemesan</label><input autoFocus type="text" value={resName} onChange={e=>setResName(e.target.value)} className="w-full p-2 border rounded focus:ring-2 ring-purple-200 outline-none" placeholder="Contoh: Pak Budi"/></div><div><label className="text-xs font-bold text-slate-500">Jam Kedatangan</label><input type="time" value={resTime} onChange={e=>setResTime(e.target.value)} className="w-full p-2 border rounded focus:ring-2 ring-purple-200 outline-none"/></div><div className="flex gap-2 mt-2"><button onClick={()=>setIsReserving(false)} className="flex-1 py-2 text-xs bg-slate-200 rounded hover:bg-slate-300">Batal</button><button onClick={handleReservation} className="flex-1 py-2 text-xs bg-purple-600 text-white rounded hover:bg-purple-700 font-bold">Simpan</button></div></div></div>)}
                             </div>
-
                             <div className="p-5 border-t bg-slate-50 space-y-2">
                                 {selectedTable.status === 'empty' && !isReserving && <><button onClick={()=>handleCheckIn(prompt('Nama Pelanggan:'))} className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded shadow flex justify-center gap-2"><CheckCircle size={18}/> Check-In Sekarang</button><button onClick={()=>setIsReserving(true)} className="w-full py-3 bg-purple-100 hover:bg-purple-200 text-purple-700 font-bold rounded shadow flex justify-center gap-2"><CalendarClock size={18}/> Buat Reservasi</button></>}
                                 {selectedTable.status === 'reserved' && <><button onClick={handleArrival} className="w-full py-3 bg-green-600 hover:bg-green-700 text-white font-bold rounded shadow flex justify-center gap-2"><User size={18}/> Tamu Datang (Check-In)</button><button onClick={handleCancelRes} className="w-full py-2 bg-red-100 hover:bg-red-200 text-red-600 font-bold rounded flex justify-center gap-2"><XCircle size={18}/> Batal Reservasi</button></>}
